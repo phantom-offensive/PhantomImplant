@@ -8,7 +8,7 @@ CC          = x86_64-w64-mingw32-gcc
 NASM        = nasm
 STRIP       = x86_64-w64-mingw32-strip
 CFLAGS      = -Wall -O2 -Iinclude
-LDFLAGS     = -lntdll -lbcrypt -lwinhttp -lcrypt32
+LDFLAGS     = -lntdll -lbcrypt -lwinhttp -lcrypt32 -liphlpapi -lws2_32 -lgdi32 -lshlwapi
 BUILD_DIR   = build
 
 SRC         = src/api.c src/syscalls.c src/crypto.c src/injection.c \

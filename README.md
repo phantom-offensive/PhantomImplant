@@ -83,9 +83,21 @@ make release
 
 ```bash
 cd ~/phantom
+# Headless mode (background) — auto-starts listeners from server.yaml
+./build/phantom-server --config configs/server.yaml --headless --mode web
+
+# Interactive mode
 ./build/phantom-server
-# Login, start HTTP/HTTPS listener
-# Verify: curl http://YOUR_IP:8080/ should return decoy response
+# Login → select interface → start listener via Web UI or CLI
+```
+
+The listener must be running before the implant connects. Configure `server.yaml`:
+```yaml
+listeners:
+  - name: "default-http"
+    type: "http"
+    bind: "0.0.0.0:8080"
+    profile: "default"
 ```
 
 ### Step 5: Deploy and Run
@@ -167,13 +179,24 @@ Wire format:   {"data":"<base64([Ver][Type][KeyID][Len][Payload])>","ts":<unix>}
 
 ## Supported Tasks
 
-| Task | Type ID | Description |
-|------|---------|-------------|
-| shell | 1 | Execute cmd command, return output |
-| sysinfo | 7 | Return hostname, user, OS, arch, PID, IP |
-| sleep | 8 | Update check-in interval |
-| kill | 9 | Self-terminate |
-| evasion | 16 | Re-run all evasion techniques |
+| Task | Type ID | Description | Tested |
+|------|---------|-------------|--------|
+| shell | 1 | Execute cmd.exe command, capture stdout/stderr | ✓ |
+| ps | 5 | Process list with PID, PPID, thread count | ✓ |
+| cd | 6 | Change working directory, return new path | ✓ |
+| sysinfo | 7 | Hostname, user, OS, arch, PID, process name, IP | ✓ |
+| sleep | 8 | Update check-in interval and jitter | ✓ |
+| kill | 9 | Self-terminate and clean up WinHTTP handles | ✓ |
+| download | 12 | Read file from target, return bytes to C2 | ✓ |
+| upload | 13 | Write file received from C2 to target path | ✓ |
+| screenshot | 14 | GDI screen capture, returns BMP in memory | ✓ |
+| shellcode | 15 | Execute raw shellcode via indirect syscalls | ✓ |
+| evasion | 16 | Re-run NTDLL unhook + ETW + AMSI bypass | ✓ |
+| persist | 17 | Registry Run key or startup folder persistence | ✓ |
+| inject | 28 | Remote process injection or Early Bird APC | ✓ |
+| ifconfig | 28* | Network adapter list with IP/MAC/gateway | ✓ |
+
+> *ifconfig uses type ID 28 in the Phantom C2 protocol (`TaskIfconfig`).
 
 ## MSVC Build (Windows)
 
