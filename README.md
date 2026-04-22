@@ -104,29 +104,50 @@ listeners:
 
 ```
 # On target Windows machine:
-phantom-implant.exe          # Release: runs silently, no window
-phantom-implant-debug.exe    # Debug: shows test output + C2 status
-phantom-implant-debug.exe --loop   # Debug: enters C2 callback loop
+
+# Release — silent, no console window, runs C2 loop immediately
+phantom-implant.exe
+
+# Debug — runs diagnostic test harness (API hashing, syscalls, crypto,
+#          evasion, one registration + check-in), then waits for Enter and exits.
+#          Use this to verify the implant can reach the C2 server.
+phantom-implant-debug.exe
+
+# Debug --loop — skips test harness, enters the full persistent C2 loop.
+#                Use this for interactive testing via Web UI or CLI.
+phantom-implant-debug.exe --loop
 ```
+
+> **Important:** `phantom-implant-debug.exe` without `--loop` only performs one
+> check-in as part of its test suite then exits. Any tasks you queue during that
+> brief window will never be delivered. Always use `--loop` for real interaction.
 
 ## Build Modes
 
-| Mode | Command | Console | Window | Use |
-|------|---------|---------|--------|-----|
-| **Debug** | `make debug` | Yes (printf) | Console window | Development, testing |
-| **Release** | `make release` | None | No window (WinMain) | Operations |
+| Mode | Command | Flag | Behaviour |
+|------|---------|------|-----------|
+| **Release** | `make release` | — | Silent WinMain, no console, full C2 loop |
+| **Debug (test)** | `make debug` | *(none)* | Console output, diagnostic tests, one check-in, exits |
+| **Debug (loop)** | `make debug` | `--loop` | Console output, skips tests, persistent C2 loop |
 
 ## What Happens When It Runs
 
 ### Release Mode (Silent)
 1. Initializes indirect syscalls (HellsHall)
-2. Runs EDR evasion: NTDLL unhook → ETW patch → AMSI bypass
-3. Registers with C2 (RSA key exchange)
-4. Enters check-in loop (sleep with jitter)
-5. Executes tasks from server, reports results
+2. Initializes private implant heap (for sleep masking)
+3. Runs EDR evasion: NTDLL unhook → ETW patch → AMSI bypass
+4. Registers with C2 (RSA key exchange)
+5. Enters check-in loop (sleep with jitter, heap masked during sleep)
+6. Executes tasks from server, reports results
 
-### Debug Mode
-Same as release but with verbose console output showing each step's result.
+### Debug Mode (no flag)
+Runs a 5-phase diagnostic test suite (API hashing → syscalls → encryption →
+evasion → C2 registration + one check-in), prints results, then exits. Useful
+for verifying the build is functional and the C2 server is reachable.
+
+### Debug Mode (`--loop`)
+Skips the test suite and enters the full C2 loop immediately. Use this for
+testing task execution (shell, ps, sysinfo, etc.) via the Phantom Web UI or CLI.
 
 ## Architecture
 
@@ -165,9 +186,12 @@ PhantomImplant/
 | API Hashing | Resolves functions by hash, nothing in IAT | Low |
 | Indirect Syscalls | Executes syscall from ntdll's memory space | Low |
 | String Encryption | XOR-encrypted C2 endpoints, field names | Low |
-| NTDLL Unhooking | Maps clean ntdll, overwrites hooked .text | Medium |
+| NTDLL Unhooking | Maps clean ntdll from disk, overwrites hooked .text | Medium |
 | ETW Bypass | Patches EtwEventWrite + NtTraceEvent SSN | Medium |
 | AMSI Bypass | Patches AmsiOpenSession + AmsiScanBuffer | Medium |
+| PPID Spoofing | Shell tasks spawn cmd.exe as child of explorer.exe, hides implant from process tree | Medium |
+| Sleep Masking | XOR-encrypts private heap before Sleep(), restores after — defeats BeaconEye/Moneta | High |
+| Secure Random | BCryptGenRandom for all key/nonce generation (no rand()) | Low |
 
 ## Phantom C2 Protocol
 
