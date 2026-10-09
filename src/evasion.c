@@ -6,7 +6,7 @@
  *   2. ETW Bypass       - Patch EtwEventWrite/Full + NtTraceEvent SSN
  *   3. AMSI Bypass      - Patch AmsiOpenSession + AmsiScanBuffer (je -> jne)
  *
- * Based on: MalDev Academy Modules 84, 105, 110
+ * Based on: standard Windows evasion techniques
  */
 
 #include "evasion.h"

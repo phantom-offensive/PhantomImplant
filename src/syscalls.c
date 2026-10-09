@@ -5,7 +5,7 @@
  * Handles hooked syscalls by checking neighbor functions.
  * Executes via indirect syscalls (jmp to ntdll's syscall instruction).
  *
- * Based on: MalDev Academy Modules 63, 66, 89
+ * Based on: standard Windows syscall techniques
  * Techniques: Hell's Gate, TartarusGate (neighbor SSN), indirect syscall via jmp
  */
 

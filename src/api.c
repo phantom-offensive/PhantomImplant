@@ -4,7 +4,7 @@
  * Custom GetProcAddress + GetModuleHandle replacements using API hashing.
  * Resolves functions without leaving strings in the binary or entries in the IAT.
  *
- * Based on: MalDev Academy Modules 53, 54, 55
+ * Based on: standard Windows API resolution techniques
  * Techniques: PE export table walking, PEB linked list traversal, Jenkins hashing
  */
 

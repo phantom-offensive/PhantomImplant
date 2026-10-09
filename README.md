@@ -195,14 +195,14 @@ PhantomImplant/
 
 ## Process Injection Techniques
 
-| Technique | What It Does | MalDev Module |
-|-----------|-------------|---------------|
-| Classic Remote Injection | VirtualAllocEx + WriteProcessMemory + CreateRemoteThread | 27 |
-| Indirect Syscall Injection | Same flow via NtAllocateVirtualMemory / NtWriteVirtualMemory / NtCreateThreadEx | 29 |
-| Early Bird APC | Queue an APC to a suspended/debugged process's main thread | 40 |
-| Local Shellcode Execution | Allocate + execute in the current process (WinAPI and syscall variants) | 24-25 |
-| Thread Hijacking (Suspended) | Create a suspended process, redirect the main thread's Rip to shellcode | 34 |
-| Thread Hijacking (Remote Enum) | Find an existing process, enumerate + suspend a thread, redirect Rip | 36 |
+| Technique | What It Does |
+|-----------|-------------|
+| Classic Remote Injection | VirtualAllocEx + WriteProcessMemory + CreateRemoteThread |
+| Indirect Syscall Injection | Same flow via NtAllocateVirtualMemory / NtWriteVirtualMemory / NtCreateThreadEx |
+| Early Bird APC | Queue an APC to a suspended/debugged process's main thread |
+| Local Shellcode Execution | Allocate + execute in the current process (WinAPI and syscall variants) |
+| Thread Hijacking (Suspended) | Create a suspended process, redirect the main thread's Rip to shellcode |
+| Thread Hijacking (Remote Enum) | Find an existing process, enumerate + suspend a thread, redirect Rip |
 
 ## Phantom C2 Protocol
 

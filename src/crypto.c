@@ -4,7 +4,7 @@
  * XOR: Fast, lightweight, no dependencies. Good for string obfuscation.
  * AES-256-CBC: Windows bCrypt library. Used for payload encryption and C2 comms.
  *
- * Based on: MalDev Academy Modules 17 (XOR), 19 (AES)
+ * Based on: standard encryption techniques
  */
 
 #include "crypto.h"

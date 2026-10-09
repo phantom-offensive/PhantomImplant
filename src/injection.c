@@ -7,7 +7,7 @@
  *   3. Early Bird APC injection (stealthy - suspended/debugged process)
  *   4. Local execution (current process, WinAPI and syscall variants)
  *
- * Based on: MalDev Academy Modules 27, 29, 40
+ * Based on: standard Windows injection techniques
  */
 
 #include "injection.h"
@@ -284,7 +284,7 @@ BOOL LocalShellcodeExecSyscall(IN PBYTE pShellcode, IN SIZE_T sSizeOfShellcode) 
 
 // =============================================
 // Thread Hijacking (create suspended process + hijack main thread)
-// MalDev Module 34: no remote thread is created; the main thread's
+// No remote thread is created; the main thread's
 // instruction pointer is redirected to the shellcode instead.
 // =============================================
 BOOL ThreadHijackSuspendedInject(IN PBYTE pShellcode, IN SIZE_T sSize, IN LPCSTR lpTargetProcess) {
@@ -340,7 +340,7 @@ _Fail:
 
 // =============================================
 // Thread Hijacking via remote thread enumeration
-// MalDev Module 36: find an existing process, enumerate one of its threads,
+// Find an existing process, enumerate one of its threads,
 // suspend it, inject shellcode, redirect Rip, and resume.
 // =============================================
 BOOL ThreadHijackRemoteEnum(IN LPWSTR szProcessName, IN PBYTE pShellcode, IN SIZE_T sSize) {

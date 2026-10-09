@@ -36,13 +36,11 @@ BOOL LocalShellcodeExecSyscall(IN PBYTE pShellcode, IN SIZE_T sSizeOfShellcode);
 
 // =============================================
 // Thread hijacking (create suspended process + hijack main thread)
-// MalDev Module 34
 // =============================================
 BOOL ThreadHijackSuspendedInject(IN PBYTE pShellcode, IN SIZE_T sSize, IN LPCSTR lpTargetProcess);
 
 // =============================================
 // Thread hijacking via remote thread enumeration
-// MalDev Module 36
 // =============================================
 BOOL ThreadHijackRemoteEnum(IN LPWSTR szProcessName, IN PBYTE pShellcode, IN SIZE_T sSize);
 
