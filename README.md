@@ -158,7 +158,7 @@ PhantomImplant/
 │   ├── api.h           # GetProcAddressH + GetModuleHandleH
 │   ├── syscalls.h      # HellsHall indirect syscalls
 │   ├── crypto.h        # XOR + AES-256-CBC
-│   ├── injection.h     # 5 injection techniques
+│   ├── injection.h     # 7 injection techniques
 │   ├── transport.h     # C2 protocol structures
 │   ├── msgpack.h       # Msgpack decoder
 │   ├── evasion.h       # NTDLL unhook + ETW + AMSI bypass
@@ -168,7 +168,7 @@ PhantomImplant/
 │   ├── api.c           # PEB walking, PE export table, Jenkins hashing
 │   ├── syscalls.c      # Hell's Gate + TartarusGate + indirect syscalls
 │   ├── crypto.c        # XOR (3 variants) + AES-256-CBC/GCM (bCrypt)
-│   ├── injection.c     # Classic, Syscall, Early Bird APC, Local
+│   ├── injection.c     # Classic, Syscall, Early Bird APC, Local, Thread Hijack
 │   ├── transport.c     # WinHTTP C2, Phantom protocol (RSA+AES+msgpack)
 │   ├── msgpack.c       # Msgpack parser (hash-based field matching)
 │   ├── evasion.c       # NTDLL unhook + ETW patch + AMSI bypass
@@ -192,6 +192,17 @@ PhantomImplant/
 | PPID Spoofing | Shell tasks spawn cmd.exe as child of explorer.exe, hides implant from process tree | Medium |
 | Sleep Masking | XOR-encrypts private heap before Sleep(), restores after — defeats BeaconEye/Moneta | High |
 | Secure Random | BCryptGenRandom for all key/nonce generation (no rand()) | Low |
+
+## Process Injection Techniques
+
+| Technique | What It Does | MalDev Module |
+|-----------|-------------|---------------|
+| Classic Remote Injection | VirtualAllocEx + WriteProcessMemory + CreateRemoteThread | 27 |
+| Indirect Syscall Injection | Same flow via NtAllocateVirtualMemory / NtWriteVirtualMemory / NtCreateThreadEx | 29 |
+| Early Bird APC | Queue an APC to a suspended/debugged process's main thread | 40 |
+| Local Shellcode Execution | Allocate + execute in the current process (WinAPI and syscall variants) | 24-25 |
+| Thread Hijacking (Suspended) | Create a suspended process, redirect the main thread's Rip to shellcode | 34 |
+| Thread Hijacking (Remote Enum) | Find an existing process, enumerate + suspend a thread, redirect Rip | 36 |
 
 ## Phantom C2 Protocol
 
