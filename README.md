@@ -158,7 +158,8 @@ PhantomImplant/
 │   ├── api.h           # GetProcAddressH + GetModuleHandleH
 │   ├── syscalls.h      # HellsHall indirect syscalls
 │   ├── crypto.h        # XOR + AES-256-CBC
-│   ├── injection.h     # 7 injection techniques
+│   ├── injection.h     # 7 shellcode injection techniques
+│   ├── hollowing.h     # 4 PE hollowing techniques (ghost/herpaderping)
 │   ├── transport.h     # C2 protocol structures
 │   ├── msgpack.h       # Msgpack decoder
 │   ├── evasion.h       # NTDLL unhook + ETW + AMSI bypass
@@ -169,6 +170,7 @@ PhantomImplant/
 │   ├── syscalls.c      # Hell's Gate + TartarusGate + indirect syscalls
 │   ├── crypto.c        # XOR (3 variants) + AES-256-CBC/GCM (bCrypt)
 │   ├── injection.c     # Classic, Syscall, Early Bird APC, Local, Thread Hijack
+│   ├── hollowing.c     # Ghost, Ghostly, Herpaderping, Herpaderply hollowing
 │   ├── transport.c     # WinHTTP C2, Phantom protocol (RSA+AES+msgpack)
 │   ├── msgpack.c       # Msgpack parser (hash-based field matching)
 │   ├── evasion.c       # NTDLL unhook + ETW patch + AMSI bypass
@@ -203,6 +205,10 @@ PhantomImplant/
 | Local Shellcode Execution | Allocate + execute in the current process (WinAPI and syscall variants) |
 | Thread Hijacking (Suspended) | Create a suspended process, redirect the main thread's Rip to shellcode |
 | Thread Hijacking (Remote Enum) | Find an existing process, enumerate + suspend a thread, redirect Rip |
+| Ghost Process Injection | Delete-pending section launched via NtCreateProcessEx, entry point run with NtCreateThreadEx |
+| Ghostly Hollowing | Map a ghost section into a suspended process, patch PEB, hijack main thread |
+| Process Herpaderping | Launch from a section of an overwritten temp file, then restore a legit image on disk |
+| Herpaderply Hollowing | Herpaderp section mapped into a suspended process, PEB patched, thread hijacked |
 
 ## Phantom C2 Protocol
 
@@ -228,7 +234,7 @@ Wire format:   {"data":"<base64([Ver][Type][KeyID][Len][Payload])>","ts":<unix>}
 | shellcode | 15 | Execute raw shellcode via indirect syscalls | ✓ |
 | evasion | 16 | Re-run NTDLL unhook + ETW + AMSI bypass | ✓ |
 | persist | 17 | Registry Run key or startup folder persistence | ✓ |
-| inject | 28 | Remote process injection or Early Bird APC | ✓ |
+| inject | 28 | Remote injection, Early Bird APC, thread hijack, or PE hollowing (ghost/ghostly/herpaderp/herpaderply) | ✓ |
 | ifconfig | 28* | Network adapter list with IP/MAC/gateway | ✓ |
 
 > *ifconfig uses type ID 28 in the Phantom C2 protocol (`TaskIfconfig`).

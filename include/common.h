@@ -106,6 +106,17 @@ typedef struct _NTDLL_CONFIG {
 #define NtQueueApcThread_HASH               0x49B40530
 #define NtResumeThread_HASH                 0xC61B11DC
 #define NtDelayExecution_HASH               0x51A773FE
+#define NtOpenFile_HASH                     0xD8885A0B
+#define NtSetInformationFile_HASH           0x3176AC8F
+#define NtWriteFile_HASH                    0xF583D0A9
+#define NtCreateProcessEx_HASH              0x7EA4C8C0
+#define NtQueryInformationProcess_HASH      0x0E9A9228
+#define NtReadVirtualMemory_HASH            0x489EA693
+#define NtGetContextThread_HASH             0x2DE943E7
+#define NtSetContextThread_HASH             0x6377DA8D
+
+// Non-syscall ntdll exports resolved by hash
+#define RtlCreateProcessParametersEx_HASH   0xCCAA2E73
 
 // Module hashes (UPPERCASE names)
 #define NTDLL_DLL_HASH                      0x5CCC2BBF
@@ -144,6 +155,14 @@ typedef struct _NTAPI_FUNC {
     NT_SYSCALL  NtQueueApcThread;
     NT_SYSCALL  NtResumeThread;
     NT_SYSCALL  NtDelayExecution;
+    NT_SYSCALL  NtOpenFile;
+    NT_SYSCALL  NtSetInformationFile;
+    NT_SYSCALL  NtWriteFile;
+    NT_SYSCALL  NtCreateProcessEx;
+    NT_SYSCALL  NtQueryInformationProcess;
+    NT_SYSCALL  NtReadVirtualMemory;
+    NT_SYSCALL  NtGetContextThread;
+    NT_SYSCALL  NtSetContextThread;
 } NTAPI_FUNC, *PNTAPI_FUNC;
 
 // =============================================
