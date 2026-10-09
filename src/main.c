@@ -83,7 +83,7 @@ static BOOL TestSyscalls(VOID) {
 
     PVOID pAddr = NULL; SIZE_T sSize = 4096;
     SET_SYSCALL(g_Nt.NtAllocateVirtualMemory);
-    NTSTATUS s = RunSyscall((HANDLE)-1, &pAddr, 0, &sSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    NTSTATUS s = RunSyscall((HANDLE)-1, &pAddr, (ULONG_PTR)0, &sSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (s == 0 && pAddr) printf("    [+] Allocated 4096 bytes at 0x%p via indirect syscall\n", pAddr);
     else printf("    [-] Alloc failed: 0x%08lX\n", s);
     return TRUE;

