@@ -420,8 +420,29 @@ VOID CollectSysInfo(PCHAR szHostname, PCHAR szUsername, PCHAR szOS,
     PCHAR pSlash = strrchr(szProcessName, '\\');
     if (pSlash) memmove(szProcessName, pSlash + 1, strlen(pSlash + 1) + 1);
 
-    // Internal IP (simplified - use 127.0.0.1 as fallback)
+    // Internal IP — first non-loopback IPv4 address via GetAdaptersInfo.
     strcpy(szIP, "127.0.0.1");
+    ULONG ulBufLen = sizeof(IP_ADAPTER_INFO);
+    PIP_ADAPTER_INFO pAdapters = (PIP_ADAPTER_INFO)HeapAlloc(GetProcessHeap(), 0, ulBufLen);
+    if (pAdapters && GetAdaptersInfo(pAdapters, &ulBufLen) == ERROR_BUFFER_OVERFLOW) {
+        HeapFree(GetProcessHeap(), 0, pAdapters);
+        pAdapters = (PIP_ADAPTER_INFO)HeapAlloc(GetProcessHeap(), 0, ulBufLen);
+    }
+    if (pAdapters && GetAdaptersInfo(pAdapters, &ulBufLen) == NO_ERROR) {
+        for (PIP_ADAPTER_INFO p = pAdapters; p; p = p->Next) {
+            for (PIP_ADDR_STRING ip = &p->IpAddressList; ip; ip = ip->Next) {
+                if (ip->IpAddress.String[0] != '0' &&
+                    strncmp(ip->IpAddress.String, "127.", 4) != 0) {
+                    strcpy(szIP, ip->IpAddress.String);
+                    break;
+                }
+            }
+            if (strncmp(szIP, "127.", 4) != 0)
+                break;
+        }
+    }
+    if (pAdapters)
+        HeapFree(GetProcessHeap(), 0, pAdapters);
 }
 
 // =============================================
