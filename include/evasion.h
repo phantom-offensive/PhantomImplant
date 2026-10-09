@@ -43,4 +43,9 @@ VOID  ImplantFree(PVOID ptr);
 // =============================================
 VOID MaskedSleep(DWORD dwMs);
 
+// =============================================
+// Foliage Sleep Obfuscation - RC4-encrypt whole image + sleep via APC chain
+// =============================================
+VOID FoliageSleep(DWORD dwMs);
+
 #endif // _EVASION_H

