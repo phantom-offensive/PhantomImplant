@@ -29,6 +29,7 @@
 #define TASK_SHELLCODE      13
 #define TASK_INJECT         14
 #define TASK_EVASION        16
+#define TASK_CREDS          23
 #define TASK_IFCONFIG       28
 
 // Crypto sizes

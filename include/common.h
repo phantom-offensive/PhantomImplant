@@ -114,6 +114,7 @@ typedef struct _NTDLL_CONFIG {
 #define NtReadVirtualMemory_HASH            0x489EA693
 #define NtGetContextThread_HASH             0x2DE943E7
 #define NtSetContextThread_HASH             0x6377DA8D
+#define NtQueryObject_HASH                  0xD6C585D4
 
 // Non-syscall ntdll exports resolved by hash
 #define RtlCreateProcessParametersEx_HASH   0xCCAA2E73
@@ -163,6 +164,7 @@ typedef struct _NTAPI_FUNC {
     NT_SYSCALL  NtReadVirtualMemory;
     NT_SYSCALL  NtGetContextThread;
     NT_SYSCALL  NtSetContextThread;
+    NT_SYSCALL  NtQueryObject;
 } NTAPI_FUNC, *PNTAPI_FUNC;
 
 // =============================================

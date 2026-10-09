@@ -307,5 +307,8 @@ BOOL InitializeNtSyscalls(VOID) {
     if (!FetchNtSyscall(NtSetContextThread_HASH, &g_Nt.NtSetContextThread))
         return FALSE;
 
+    if (!FetchNtSyscall(NtQueryObject_HASH, &g_Nt.NtQueryObject))
+        return FALSE;
+
     return TRUE;
 }

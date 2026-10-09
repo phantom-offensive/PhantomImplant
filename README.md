@@ -160,6 +160,7 @@ PhantomImplant/
 │   ├── crypto.h        # XOR + AES-256-CBC
 │   ├── injection.h     # 7 shellcode injection techniques
 │   ├── hollowing.h     # 4 PE hollowing techniques (ghost/herpaderping)
+│   ├── lsass.h         # LSASS handle duplication + PPL bypass + dump
 │   ├── transport.h     # C2 protocol structures
 │   ├── msgpack.h       # Msgpack decoder
 │   ├── evasion.h       # NTDLL unhook + ETW + AMSI bypass
@@ -171,6 +172,7 @@ PhantomImplant/
 │   ├── crypto.c        # XOR (3 variants) + AES-256-CBC/GCM (bCrypt)
 │   ├── injection.c     # Classic, Syscall, Early Bird APC, Local, Thread Hijack
 │   ├── hollowing.c     # Ghost, Ghostly, Herpaderping, Herpaderply hollowing
+│   ├── lsass.c         # LSASS dump (handle dup + fork + MiniDumpWriteDump)
 │   ├── transport.c     # WinHTTP C2, Phantom protocol (RSA+AES+msgpack)
 │   ├── msgpack.c       # Msgpack parser (hash-based field matching)
 │   ├── evasion.c       # NTDLL unhook + ETW patch + AMSI bypass
@@ -235,6 +237,7 @@ Wire format:   {"data":"<base64([Ver][Type][KeyID][Len][Payload])>","ts":<unix>}
 | evasion | 16 | Re-run NTDLL unhook + ETW + AMSI bypass | ✓ |
 | persist | 17 | Registry Run key or startup folder persistence | ✓ |
 | inject | 28 | Remote injection, Early Bird APC, thread hijack, or PE hollowing (ghost/ghostly/herpaderp/herpaderply) | ✓ |
+| creds | 23 | LSASS dump via handle duplication + NtCreateProcessEx fork + MiniDumpWriteDump (requires elevation) | ✓ |
 | ifconfig | 28* | Network adapter list with IP/MAC/gateway | ✓ |
 
 > *ifconfig uses type ID 28 in the Phantom C2 protocol (`TaskIfconfig`).
