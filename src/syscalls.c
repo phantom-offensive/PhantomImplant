@@ -198,17 +198,31 @@ BOOL FetchNtSyscall(IN DWORD dwSysHash, OUT PNT_SYSCALL pNtSys) {
     if (!pNtSys->pSyscallAddress)
         return FALSE;
 
-    // ---- INDIRECT SYSCALL: Find a random 'syscall' instruction in ntdll ----
-    // Jump 0xFF bytes away from our syscall to find another function's syscall instruction.
-    // This is what makes it "indirect" - we jmp to ntdll's memory instead of executing
-    // the syscall instruction from our own binary.
-    ULONG_PTR uFuncAddress = (ULONG_PTR)pNtSys->pSyscallAddress + 0xFF;
+    // ---- INDIRECT SYSCALL (jumper_randomized) ----
+    // Jump to a random neighboring function's 'syscall' instruction instead of
+    // a fixed offset, so the indirect jump target varies per run and cannot be
+    // correlated to the syscall being invoked. Falls back to the deterministic
+    // neighbor scan if the randomized scan finds nothing.
+    ULONG_PTR uFuncAddress = (ULONG_PTR)pNtSys->pSyscallAddress;
+    DWORD dwRand = GetTickCount() ^ (DWORD)(uFuncAddress >> 4);
+    ULONG_PTR uScan = uFuncAddress + 0x40 + (dwRand % 0x200);
 
-    for (DWORD z = 0, x = 1; z <= RANGE; z++, x++) {
-        // 0F 05 = syscall instruction
-        if (*((PBYTE)uFuncAddress + z) == 0x0F && *((PBYTE)uFuncAddress + x) == 0x05) {
-            pNtSys->pSyscallInstAddress = (PVOID)((ULONG_PTR)uFuncAddress + z);
+    for (DWORD z = 0; z <= 0x100; z++) {
+        if (*((PBYTE)uScan + z) == 0x0F && *((PBYTE)uScan + z + 1) == 0x05) {
+            pNtSys->pSyscallInstAddress = (PVOID)(uScan + z);
             break;
+        }
+    }
+
+    // Fallback: deterministic neighbor scan.
+    if (!pNtSys->pSyscallInstAddress) {
+        ULONG_PTR uFallback = uFuncAddress + 0xFF;
+        for (DWORD z = 0, x = 1; z <= RANGE; z++, x++) {
+            // 0F 05 = syscall instruction
+            if (*((PBYTE)uFallback + z) == 0x0F && *((PBYTE)uFallback + x) == 0x05) {
+                pNtSys->pSyscallInstAddress = (PVOID)(uFallback + z);
+                break;
+            }
         }
     }
 
